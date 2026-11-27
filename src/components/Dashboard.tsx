@@ -89,6 +89,58 @@ export const Dashboard: React.FC<DashboardProps> = ({ open, onClose, onSelectPro
     load();
   };
 
+  // ---- Bulk key entry: paste many keys at once, one per line -------------
+  // Provider is auto-detected from the key prefix; unrecognized lines are
+  // reported and never sent. Key VALUES are never shown back — results show
+  // only provider + a 4-char hint.
+  const [bulkText, setBulkText] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  type BulkResult = { provider: string; hint: string; status: 'added' | 'exists' | 'failed' | 'unrecognized'; message?: string };
+  const [bulkResults, setBulkResults] = useState<BulkResult[]>([]);
+
+  const detectProvider = (line: string): 'gemini' | 'groq' | 'openrouter' | null => {
+    if (line.startsWith('AIza')) return 'gemini';
+    if (line.startsWith('gsk_')) return 'groq';
+    if (line.startsWith('sk-or-v1-')) return 'openrouter';
+    return null;
+  };
+
+  const addBulkKeys = async () => {
+    const lines = bulkText.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return;
+    setBulkBusy(true);
+    setBulkResults([]);
+    const results: BulkResult[] = [];
+    for (const line of lines) {
+      const provider = detectProvider(line);
+      const hint = `${line.slice(0, 4)}…`;
+      if (!provider) {
+        results.push({ provider: 'অচেনা', hint, status: 'unrecognized', message: 'প্রোভাইডার চেনা যায়নি — AIza / gsk_ / sk-or-v1- দিয়ে শুরু হতে হবে।' });
+        continue;
+      }
+      try {
+        const res = await fetch('/api/router/keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider, key: line }),
+        });
+        const d = await res.json();
+        if (!res.ok) {
+          const msg = d.error || 'Failed to add key';
+          results.push({ provider, hint, status: msg.includes('already in the pool') ? 'exists' : 'failed', message: msg });
+        } else {
+          results.push({ provider, hint, status: 'added' });
+        }
+      } catch (e: any) {
+        results.push({ provider, hint, status: 'failed', message: e.message });
+      }
+    }
+    setBulkResults(results);
+    setBulkText('');
+    setBulkBusy(false);
+    load();
+  };
+
   const createJob = async () => {
     if (!jobPrompt.trim()) return;
     await fetch('/api/jobs', {
@@ -177,6 +229,46 @@ export const Dashboard: React.FC<DashboardProps> = ({ open, onClose, onSelectPro
                 <button onClick={addKey} disabled={!newKey.trim()} className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center gap-1">
                   <Plus className="w-3.5 h-3.5" /> Add
                 </button>
+              </div>
+
+              {/* Bulk entry — paste all keys at once, one per line */}
+              <div className="mt-5 border-t border-slate-800 pt-4">
+                <p className="text-xs font-semibold text-white mb-1">একসাথে অনেক key বসান (বাল্ক)</p>
+                <p className="text-[11px] text-slate-500 mb-2 leading-relaxed">
+                  সব key একসাথে পেস্ট করুন — এক লাইনে একটা key। Gemini (AIza…), Groq (gsk_…) ও OpenRouter (sk-or-v1-…) নিজে থেকেই চেনা হবে। Key-র মান কোথাও দেখানো হয় না।
+                </p>
+                <textarea
+                  value={bulkText}
+                  onChange={(e) => setBulkText(e.target.value)}
+                  placeholder={'AIza…\ngsk_…\nsk-or-v1-…'}
+                  rows={4}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none font-mono resize-y"
+                />
+                <div className="flex items-center gap-2 mt-2">
+                  <button onClick={addBulkKeys} disabled={!bulkText.trim() || bulkBusy} className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center gap-1">
+                    {bulkBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />} সবগুলো যোগ করুন
+                  </button>
+                  {bulkResults.length > 0 && (
+                    <span className="text-[11px] text-slate-400">
+                      {bulkResults.filter((r) => r.status === 'added').length}টি যুক্ত হয়েছে · {bulkResults.filter((r) => r.status === 'exists').length}টি আগে থেকেই ছিল
+                    </span>
+                  )}
+                </div>
+                {bulkResults.length > 0 && (
+                  <div className="space-y-1.5 mt-3">
+                    {bulkResults.map((r, i) => (
+                      <div key={i} className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs">
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${r.status === 'added' ? 'bg-emerald-400' : r.status === 'exists' ? 'bg-amber-400' : 'bg-rose-400'}`} />
+                        <span className="text-white font-medium">{r.provider}</span>
+                        <span className="text-slate-500 font-mono">{r.hint}</span>
+                        <span className={r.status === 'added' ? 'text-emerald-300' : r.status === 'exists' ? 'text-amber-300' : 'text-rose-300'}>
+                          {r.status === 'added' ? 'যুক্ত হয়েছে' : r.status === 'exists' ? 'আগে থেকেই আছে' : r.status === 'unrecognized' ? 'চেনা যায়নি' : 'ব্যর্থ'}
+                        </span>
+                        {r.message && <span className="text-slate-400 truncate">{r.message}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
