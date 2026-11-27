@@ -13,6 +13,7 @@ import { addFirebaseToProject, deployFirebaseHosting } from "./firebaseConnect.t
 import { readUserMemory, appendUserMemory } from "./memory.ts";
 import { readLessons, recordLesson } from "./lessons.ts";
 import { createJob } from "./jobs.ts";
+import { chatOnce, cheapChain } from "./llmClient.ts";
 import { loadStore, saveStoreSoon, newId } from "./nexusStore.ts";
 
 export interface AskQuestionItem {
@@ -1310,35 +1311,23 @@ export async function runClawPrompt(prompt: string, role: string = 'developer', 
   };
 }
 
+// STEP 9 (P1-2): omo_coordinate makes ONE planner sub-call on the CHEAP
+// chain (never Hydrogen) with an output cap. The old code made TWO sub-calls
+// through execCtx.llmInvoker — the turn model's invoker (Hydrogen on coding
+// turns) — plus a hardcoded gemini-3.5-flash-lite fallback. The single
+// combined plan covers both the Architect spec and the Executor
+// file-operations list; the two phases split it on the "FILE OPERATIONS:"
+// marker. Fail-soft: when the cheap call is unavailable (no keys / router
+// down) the phases fall back to the static templates, exactly as before.
+const OMO_PLAN_MAX_TOKENS = 600;
+const OMO_PLAN_TIMEOUT_MS = 30000;
+
 export async function runOmoCoordinate(
   task: string,
   context?: string,
   subAgents: string[] = ['Architect', 'Executor', 'Reviewer'],
   execCtx?: ToolExecutionContext
 ) {
-  const invokeAgentLLM = async (systemPrompt: string, userPrompt: string): Promise<string | null> => {
-    if (execCtx?.llmInvoker) {
-      try {
-        return await execCtx.llmInvoker(systemPrompt, userPrompt);
-      } catch (e) {
-        console.warn('OmO llmInvoker failed:', e);
-      }
-    }
-    if (process.env.GEMINI_API_KEY) {
-      try {
-        const res = await getAiClient().models.generateContent({
-          model: 'gemini-3.5-flash-lite',
-          contents: userPrompt,
-          config: { systemInstruction: systemPrompt },
-        });
-        return res.text || null;
-      } catch (e) {
-        console.warn('OmO Gemini fallback failed:', e);
-      }
-    }
-    return null;
-  };
-
   // Gather real workspace context for sub-agents
   let workspaceSnapshot = '';
   try {
@@ -1353,6 +1342,36 @@ export async function runOmoCoordinate(
     workspaceSnapshot = `Project: ${pkgName}\nTop-level entries: ${topList}`;
   } catch {}
 
+  // ONE planner sub-call on the cheap chain (cheapChain() — live-verified
+  // cheap seeds + auto:fast floor, never Hydrogen, never a hardcoded model
+  // ID), output-capped at OMO_PLAN_MAX_TOKENS.
+  let planText: string | null = null;
+  try {
+    const { text, model } = await chatOnce({
+      system: 'You are the Planner Sub-Agent in a multi-agent engineering pipeline. Output a concrete plan only: an architectural specification, then the exact workspace file operations.',
+      user: `Task: ${task}\n${context ? `Context: ${context}\n` : ''}${workspaceSnapshot}\n\nRespond in exactly two sections:\nARCHITECTURE: Provide a concise, concrete architectural specification (target files, components/routes, data flow, and verification criteria). Keep it under 180 words.\nFILE OPERATIONS: List the exact files to create/edit via write_to_file or replace_file_content, and exact packages/commands if needed. Keep under 160 words.`,
+      chain: cheapChain(),
+      maxTokens: OMO_PLAN_MAX_TOKENS,
+      timeoutMs: OMO_PLAN_TIMEOUT_MS,
+    });
+    planText = text?.trim() || null;
+    if (planText) console.log(`[OmO] planner call used cheap model ${model} (max_tokens=${OMO_PLAN_MAX_TOKENS})`);
+  } catch (e) {
+    console.warn('OmO cheap planner call failed — falling back to static plan:', e);
+  }
+
+  // Split the single plan into the Architect spec and the Executor file list.
+  const splitPlan = (plan: string | null): { architecture: string | null; fileOps: string | null } => {
+    if (!plan) return { architecture: null, fileOps: null };
+    const marker = 'FILE OPERATIONS:';
+    const idx = plan.indexOf(marker);
+    if (idx === -1) return { architecture: plan, fileOps: null };
+    const architecture = plan.slice(0, idx).replace(/^ARCHITECTURE:\s*/i, '').trim();
+    const fileOps = plan.slice(idx + marker.length).trim();
+    return { architecture: architecture || null, fileOps: fileOps || null };
+  };
+  const planParts = splitPlan(planText);
+
   const phases: Array<{ agent: string; role: string; status: string; output: string }> = [];
 
   // Phase 1: Architect Agent
@@ -1366,12 +1385,7 @@ export async function runOmoCoordinate(
     status: 'running',
   });
 
-  const architectPrompt = `Task: ${task}\n${context ? `Context: ${context}\n` : ''}${workspaceSnapshot}\nProvide a concise, concrete architectural specification (target files, components/routes, data flow, and verification criteria). Keep it under 180 words.`;
-  const architectLLMOut = await invokeAgentLLM(
-    'You are the Architect Sub-Agent in a multi-agent engineering pipeline. Output concrete file targets, contracts, and architecture only.',
-    architectPrompt
-  );
-  const architectOutput = architectLLMOut || `Architectural plan for "${task}": inspected ${workspaceSnapshot || 'workspace'}. Decomposed into target file edits, types, and UI/API wiring.`;
+  const architectOutput = planParts.architecture || `Architectural plan for "${task}": inspected ${workspaceSnapshot || 'workspace'}. Decomposed into target file edits, types, and UI/API wiring.`;
 
   execCtx?.onAgentStep?.({
     id: archStepId,
@@ -1399,12 +1413,12 @@ export async function runOmoCoordinate(
     status: 'running',
   });
 
-  const executorPrompt = `Architect Specification:\n${architectOutput}\n\nTask: ${task}\nList the exact files to create/edit via write_to_file or replace_file_content, and exact packages/commands if needed. Keep under 160 words.`;
-  const executorLLMOut = await invokeAgentLLM(
-    'You are the Executor Sub-Agent. Translate the Architect spec into exact workspace file operations (write_to_file / replace_file_content) — never dump code in chat.',
-    executorPrompt
-  );
-  const executorOutput = executorLLMOut || `Ready to apply direct workspace edits via write_to_file / replace_file_content based on Architect blueprint.`;
+  // Executor reuses the same single planner call — no second LLM sub-call.
+  const executorOutput = planParts.fileOps
+    ? `File operations (from the single planner call):\n${planParts.fileOps}`
+    : planParts.architecture
+      ? `Apply direct workspace edits via write_to_file / replace_file_content following the Architect plan above.`
+      : `Ready to apply direct workspace edits via write_to_file / replace_file_content based on Architect blueprint.`;
 
   execCtx?.onAgentStep?.({
     id: execStepId,
