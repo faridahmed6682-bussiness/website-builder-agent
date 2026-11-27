@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
+  <title>Nexus AI | Live Canvas Preview</title>
+  <meta name="description" content="Nexus AI Live Interactive Canvas & Website Preview" />
+  <meta name="theme-color" content="#090d16" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              100: '#e0e7ff',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @keyframes pulseGlow {
+      0%, 100% { opacity: 0.4; transform: scale(1); }
+      50% { opacity: 0.8; transform: scale(1.05); }
+    }
+    .glow-bg {
+      animation: pulseGlow 6s ease-in-out infinite;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans antialiased selection:bg-indigo-500 selection:text-white">
+
+  <!-- Top Glass Navigation Bar -->
+  <header class="sticky top-0 z-40 w-full border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-md px-4 lg:px-8 py-3.5 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-500/20 text-white font-black text-sm tracking-wider">
+        N
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="font-bold text-white text-base tracking-tight">Nexus AI Canvas</span>
+          <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Live
+          </span>
+        </div>
+        <p class="text-[11px] text-slate-400">Production-Ready Interactive Environment</p>
+      </div>
+    </div>
+
+    <!-- Quick Filter / Action Tabs -->
+    <div class="flex items-center gap-2">
+      <button onclick="switchTab('dashboard')" id="tab-dashboard" class="tab-btn px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-indigo-600 text-white shadow-sm shadow-indigo-500/20">
+        ড্যাশবোর্ড
+      </button>
+      <button onclick="switchTab('apps')" id="tab-apps" class="tab-btn px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800">
+        ওয়েব অ্যাপস
+      </button>
+      <button onclick="switchTab('pwa')" id="tab-pwa" class="tab-btn px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800">
+        PWA স্ট্যাটাস
+      </button>
+    </div>
+  </header>
+
+  <!-- Main View Area -->
+  <main class="flex-1 max-w-6xl w-full mx-auto px-4 lg:px-8 py-6 space-y-6">
+
+    <!-- Hero / Status Banner -->
+    <section class="relative rounded-2xl overflow-hidden border border-slate-800/80 bg-gradient-to-br from-slate-900 via-slate-900/90 to-indigo-950/40 p-6 lg:p-8 shadow-xl">
+      <div class="absolute -top-24 -right-24 w-80 h-80 bg-indigo-500/15 rounded-full blur-3xl glow-bg pointer-events-none"></div>
+      
+      <div class="relative z-10 max-w-2xl space-y-3">
+        <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-medium">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          Google AI Studio Build আর্কিটেকচার সক্রিয়
+        </div>
+        <h1 class="text-2xl lg:text-3xl font-extrabold text-white tracking-tight">
+          লাইভ ক্যানভাস প্রস্তুত
+        </h1>
+        <p class="text-slate-300 text-sm leading-relaxed">
+          Nexus AI এখন সম্পূর্ণভাবে প্রস্তুত। বামপাশের চ্যাটবক্সে যেকোনো ওয়েবসাইট, ড্যাশবোর্ড, ই-কমার্স বা PWA অ্যাপ বানাতে নির্দেশ দিন। আপনার সম্পূর্ণ ইন্টারঅ্যাক্টিভ কোড এখানে রিয়েল-টাইমে লোড হবে।
+        </p>
+
+        <div class="pt-2 flex flex-wrap items-center gap-3">
+          <button onclick="triggerSampleNotice()" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition-all shadow-md shadow-indigo-600/25 flex items-center gap-1.5">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/></svg>
+            ইন্টারঅ্যাক্টিভ টেস্ট করুন
+          </button>
+          <button id="nexus-pwa-install-btn" onclick="window.triggerPWAInstall && window.triggerPWAInstall()" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-medium text-xs transition-all flex items-center gap-1.5">
+            <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            📱 PWA ইনস্টল করুন
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 1: Dashboard View -->
+    <div id="view-dashboard" class="space-y-6">
+      <!-- 4 Metric Cards -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-4 space-y-1">
+          <span class="text-xs text-slate-400 font-medium">সিস্টেম স্ট্যাটাস</span>
+          <div class="text-xl font-bold text-emerald-400 flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span> 100% সচল
+          </div>
+          <span class="text-[11px] text-slate-500">Live Preview & Server</span>
+        </div>
+
+        <div class="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-4 space-y-1">
+          <span class="text-xs text-slate-400 font-medium">ইঞ্জিন মডেল</span>
+          <div class="text-xl font-bold text-indigo-300">Gemini 3.8</div>
+          <span class="text-[11px] text-slate-500">Google AI Studio</span>
+        </div>
+
+        <div class="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-4 space-y-1">
+          <span class="text-xs text-slate-400 font-medium">টুলস সক্ষমতা</span>
+          <div class="text-xl font-bold text-amber-300">16+ Tools</div>
+          <span class="text-[11px] text-slate-500">write, replace, build, qc</span>
+        </div>
+
+        <div class="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-4 space-y-1">
+          <span class="text-xs text-slate-400 font-medium">ক্যাশিং ও PWA</span>
+          <div class="text-xl font-bold text-purple-300">Offline Ready</div>
+          <span class="text-[11px] text-slate-500">Service Worker v1</span>
+        </div>
+      </div>
+
+      <!-- Interactive Widget: Quick Todo & Interactive Notes -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Interactive Todo List -->
+        <div class="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5 space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h3 class="text-sm font-bold text-white flex items-center gap-2">
+              <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+              লাইভ ইন্টারঅ্যাক্টিভ টাস্ক লিস্ট
+            </h3>
+            <span id="task-counter" class="text-xs text-indigo-400 font-semibold bg-indigo-500/10 px-2 py-0.5 rounded-full">3 টাস্ক</span>
+          </div>
+
+          <div class="flex gap-2">
+            <input id="new-task-input" type="text" placeholder="নতুন টাস্ক লিখুন..." class="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-all" />
+            <button onclick="addTask()" class="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-all">যুক্ত করুন</button>
+          </div>
+
+          <div id="task-list" class="space-y-2">
+            <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
+              <div class="flex items-center gap-2.5">
+                <input type="checkbox" checked onchange="toggleTask(this)" class="rounded border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4 bg-slate-900 cursor-pointer" />
+                <span class="text-xs text-slate-400 line-through">Nexus AI এর নতুন টুলস লোড করা</span>
+              </div>
+              <span class="text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">সম্পন্ন</span>
+            </div>
+
+            <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
+              <div class="flex items-center gap-2.5">
+                <input type="checkbox" onchange="toggleTask(this)" class="rounded border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4 bg-slate-900 cursor-pointer" />
+                <span class="text-xs text-slate-200">লাইভ ক্যানভাস সাদা সমস্যা সমাধান</span>
+              </div>
+              <span class="text-[10px] text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded">চলমান</span>
+            </div>
+
+            <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
+              <div class="flex items-center gap-2.5">
+                <input type="checkbox" onchange="toggleTask(this)" class="rounded border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4 bg-slate-900 cursor-pointer" />
+                <span class="text-xs text-slate-200">চ্যাটে নতুন ওয়েবসাইট তৈরির নির্দেশ দেওয়া</span>
+              </div>
+              <span class="text-[10px] text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">অপেক্ষমাণ</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Capability Showcase -->
+        <div class="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5 space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h3 class="text-sm font-bold text-white flex items-center gap-2">
+              <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg>
+              যেসব ওয়েবসাইট ও অ্যাপ বানাতে পারেন
+            </h3>
+            <span class="text-[10px] text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded-full">যেকোনো ক্যাটাগরি</span>
+          </div>
+
+          <div class="space-y-2 text-xs">
+            <div class="flex items-start gap-2.5 p-2 rounded-lg bg-slate-950/40">
+              <span class="text-base">🛒</span>
+              <div>
+                <strong class="text-slate-200 block">ই-কমার্স স্টোর:</strong>
+                <span class="text-slate-400">প্রোডাক্ট ফিল্টারিং, কার্ট ড্রয়ার, প্রমো কোড ও চেকআউট।</span>
+              </div>
+            </div>
+            <div class="flex items-start gap-2.5 p-2 rounded-lg bg-slate-950/40">
+              <span class="text-base">📊</span>
+              <div>
+                <strong class="text-slate-200 block">বিজনেস ড্যাশবোর্ড:</strong>
+                <span class="text-slate-400">KPI মেট্রিক্স, ইন্টারঅ্যাক্টিভ চার্ট ও ডেটা টেবিল।</span>
+              </div>
+            </div>
+            <div class="flex items-start gap-2.5 p-2 rounded-lg bg-slate-950/40">
+              <span class="text-base">🎮</span>
+              <div>
+                <strong class="text-slate-200 block">2D গেমস ও আর্কেড:</strong>
+                <span class="text-slate-400">ক্যানভাস স্নেক গেম, ফ্ল্যাপি বার্ড, 2048 এবং স্কোরবোর্ড।</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 2: Apps View (Hidden initially) -->
+    <div id="view-apps" class="hidden space-y-4">
+      <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 text-center space-y-3">
+        <div class="w-12 h-12 rounded-2xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center mx-auto">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+        </div>
+        <h3 class="text-base font-bold text-white">আপনার তৈরি প্রজেক্টসমূহ</h3>
+        <p class="text-xs text-slate-400 max-w-md mx-auto">
+          বামপাশের চ্যাটে যখনই কোনো নতুন ওয়েবসাইট বা অ্যাপ তৈরিতে প্রম্পট দিবেন, Nexus AI স্বয়ংক্রিয়ভাবে তা কম্পাইল করে এই ক্যানভাসে মাউন্ট করবে।
+        </p>
+      </div>
+    </div>
+
+    <!-- Tab 3: PWA View (Hidden initially) -->
+    <div id="view-pwa" class="hidden space-y-4">
+      <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 space-y-4">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+          PWA & Offline Capability Checklist
+        </h3>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
+            <span class="text-emerald-400 font-semibold">✓ Web App Manifest</span>
+            <p class="text-slate-400 text-[11px]">আইকন, থিম কালার ও ডিসপ্লে মোড কনফিগার করা।</p>
+          </div>
+          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
+            <span class="text-emerald-400 font-semibold">✓ Service Worker</span>
+            <p class="text-slate-400 text-[11px]">নেটওয়ার্ক অফলাইন হলেও ক্যাশ থেকে দ্রুত লোড।</p>
+          </div>
+          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
+            <span class="text-emerald-400 font-semibold">✓ Installable</span>
+            <p class="text-slate-400 text-[11px]">beforeinstallprompt এর মাধ্যমে হোম স্ক্রিনে ইনস্টল করা যায়।</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <footer class="border-t border-slate-900 bg-slate-950 px-4 py-3 text-center text-xs text-slate-500">
+    Nexus AI Live Canvas Engine • Powered by Gemini 3.8 • Port 3000
+  </footer>
+
+  <script>
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('bg-indigo-600', 'text-white', 'shadow-sm', 'shadow-indigo-500/20');
+        btn.classList.add('bg-slate-900', 'text-slate-300', 'border', 'border-slate-800');
+      });
+      const activeBtn = document.getElementById('tab-' + tab);
+      if (activeBtn) {
+        activeBtn.classList.add('bg-indigo-600', 'text-white', 'shadow-sm', 'shadow-indigo-500/20');
+        activeBtn.classList.remove('bg-slate-900', 'text-slate-300', 'border-slate-800');
+      }
+
+      ['dashboard', 'apps', 'pwa'].forEach(t => {
+        const el = document.getElementById('view-' + t);
+        if (el) el.classList.add('hidden');
+      });
+      const targetEl = document.getElementById('view-' + tab);
+      if (targetEl) targetEl.classList.remove('hidden');
+    }
+
+    function toggleTask(checkbox) {
+      const text = checkbox.nextElementSibling;
+      if (checkbox.checked) {
+        text.classList.add('line-through', 'text-slate-400');
+        text.classList.remove('text-slate-200');
+      } else {
+        text.classList.remove('line-through', 'text-slate-400');
+        text.classList.add('text-slate-200');
+      }
+    }
+
+    function addTask() {
+      const input = document.getElementById('new-task-input');
+      const val = input.value.trim();
+      if (!val) return;
+
+      const list = document.getElementById('task-list');
+      const item = document.createElement('div');
+      item.className = 'flex items-center justify-between p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80';
+      item.innerHTML = `
+        <div class="flex items-center gap-2.5">
+          <input type="checkbox" onchange="toggleTask(this)" class="rounded border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4 bg-slate-900 cursor-pointer" />
+          <span class="text-xs text-slate-200">${val}</span>
+        </div>
+        <span class="text-[10px] text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded">নতুন</span>
+      `;
+      list.prepend(item);
+      input.value = '';
+
+      const count = list.children.length;
+      document.getElementById('task-counter').textContent = count + ' টাস্ক';
+    }
+
+    function triggerSampleNotice() {
+      alert('লাইভ ক্যানভাস সক্রিয়! এবার বামপাশের Nexus AI চ্যাটে যে ওয়েবসাইটটি বানাতে চান তা লিখে মেসেজ পাঠান।');
+    }
+
+    // Auto register Service Worker
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(err => console.log('SW Note:', err));
+      });
+    }
+
+    // Global Install prompt handler
+    let deferredPrompt = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      const btn = document.getElementById('nexus-pwa-install-btn');
+      if (btn) btn.style.display = 'inline-flex';
+    });
+
+    window.triggerPWAInstall = function() {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then((choice) => {
+          if (choice.outcome === 'accepted') console.log('PWA Accepted');
+          deferredPrompt = null;
+        });
+      } else {
+        alert('অ্যাপটি ইনস্টল করতে ব্রাউজারের মেনু থেকে "Add to Home Screen" বা "Install" নির্বাচন করুন।');
+      }
+    };
+  </script>
+</body>
+</html>

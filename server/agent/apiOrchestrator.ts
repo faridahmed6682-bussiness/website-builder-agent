@@ -1,0 +1,3311 @@
+import { GoogleGenAI, Type, type FunctionDeclaration } from "@google/genai";
+import fs from "fs/promises";
+import path from "path";
+import type { Response } from "express";
+import { serverTools, executeServerTool, type ToolExecutionContext } from "./geminiService.ts";
+import { matchSkillsForPrompt } from "./skillsRegistry.ts";
+import { autoDeployWebsiteFromText, getNexusSystemInstruction, prepareGeminiHistoryAndLastMessage, type SystemInstructionOptions } from "./websiteDeployer.ts";
+import { routeTurnModel, turnReasoningEffort, classifyTask, pickPlanningEffort, planningChain, cheapChain, codingChain, chatOnce, chatChain, type PlanningEffort } from "./llmClient.ts";
+import { getRouterApiKey } from "../router/keys.ts";
+import { decideIntent, CASUAL_SYSTEM } from "./intentGate.ts";
+import { matchDirectCommand, getCachedToolResult, setCachedToolResult } from "./directTools.ts";
+import { readUserMemory, saveChatTurn, loadChat, listProjects, listChats } from "./memory.ts";
+import { readLessons, recordLesson } from "./lessons.ts";
+import { newTurnUsage, addLlmStep, addToolCall, usageTotals, recordTurnUsage, costTierOfModel, estimateTokens, sessionUsageSummary, type TurnUsage } from "./usage.ts";
+import { describeImage } from "./vision.ts";
+import { CODING_SKILLS_REGISTRY } from "./skillsRegistry.ts";
+import {
+  getChainForTask, nextAfterFailure, noteModelAttempt, recordModelSuccess, recordModelFailure,
+  parseRetryAfter, tierOfModel, degradationBetween, handoffNote,
+  classifyRateLimit, limitLabel, nextMidnightPacificMs, firstOpenRouterFreeModel, type TaskKind, type RateLimitKind,
+} from "./modelChain.ts";
+
+export type ApiProviderId = 'gemini' | 'openrouter' | 'groq' | 'cerebras' | 'mistral' | 'grok' | 'custom' | 'freellmapi';
+
+export interface KeyConfig {
+  id: string;
+  provider: ApiProviderId;
+  name: string;
+  apiKey: string;
+  model: string;
+  baseUrl?: string;
+  isActive: boolean;
+  rpmLimit: number;
+  status?: 'healthy' | 'cooldown' | 'error';
+  lastError?: string | null;
+}
+
+interface KeyRuntimeStats {
+  timestamps: number[]; // timestamps in last 60s
+  cooldownUntil: number;
+  totalRequests: number;
+  lastError: string | null;
+  lastUsedAt: number;
+  /** Which budget the last 429 hit: rpm | tpm | rpd (null = no rate limit seen). */
+  limitKind?: RateLimitKind | null;
+  limitAt?: number;
+  /** Midnight-Pacific reset time (ms epoch) when limitKind is rpd. */
+  dailyResetAt?: number;
+}
+
+const keyStatsMap = new Map<string, KeyRuntimeStats>();
+
+export interface SystemLogEntry {
+  id: string;
+  timestamp: number;
+  level: 'error' | 'warn' | 'info' | 'success';
+  category: 'auth' | 'rate_limit' | 'rotation' | 'execution' | 'network';
+  keyName?: string;
+  provider?: string;
+  model?: string;
+  message: string;
+  details?: string;
+}
+
+const systemLogs: SystemLogEntry[] = [];
+const MAX_LOGS = 200;
+
+export function addSystemLog(log: Omit<SystemLogEntry, 'id' | 'timestamp'>) {
+  const entry: SystemLogEntry = {
+    id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: Date.now(),
+    ...log
+  };
+  systemLogs.unshift(entry);
+  if (systemLogs.length > MAX_LOGS) {
+    systemLogs.pop();
+  }
+}
+
+export function getSystemLogs(): SystemLogEntry[] {
+  return systemLogs;
+}
+
+export function clearSystemLogs(): void {
+  systemLogs.length = 0;
+}
+
+import fsSync from "fs";
+
+// Track last successful responding key persistently so Nexus remembers and prioritizes it across turns & restarts
+const STICKY_KEY_FILE = path.resolve(process.cwd(), '.nexus_sticky_key.json');
+let lastSuccessfulKeyId: string | null = (() => {
+  try {
+    const raw = fsSync.readFileSync(STICKY_KEY_FILE, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.keyId === 'string' ? parsed.keyId : null;
+  } catch {
+    return null;
+  }
+})();
+
+export function getLastSuccessfulKeyId(): string | null {
+  return lastSuccessfulKeyId;
+}
+
+function persistStickyKeyId(keyId: string | null) {
+  lastSuccessfulKeyId = keyId;
+  fs.writeFile(STICKY_KEY_FILE, JSON.stringify({ keyId, updatedAt: Date.now() }), 'utf-8').catch(() => {});
+}
+
+const SECRETS_FILE = path.resolve(process.cwd(), '.secrets.json');
+
+export function getFreeLLMAPIUrl(): string {
+  // MERGE: FREE_LLM_API_URL is now an OPTIONAL override for an external
+  // FreeLLMAPI. Default is the embedded router on this same service
+  // (http://127.0.0.1:<PORT>/v1) — one service, one port, no second deploy.
+  const raw = (process.env.FREE_LLM_API_URL || '').trim().replace(/\/+$/, '');
+  if (raw) return raw;
+  const port = process.env.PORT || '3000';
+  return `http://127.0.0.1:${port}/v1`;
+}
+
+export function getFreeLLMAPIKey(): string {
+  const env = (process.env.FREE_LLM_API_KEY || '').trim().replace(/^["']|["']$/g, '');
+  if (env) return env;
+  // MERGE: no external key -> the internal router key (env ROUTER_API_KEY
+  // when set, else a boot-generated key held in memory only).
+  return getRouterApiKey();
+}
+
+export function getOpenAICompatibleEndpoint(provider: string, baseUrl?: string): string {
+  if (provider === 'openrouter') return 'https://openrouter.ai/api/v1/chat/completions';
+  if (provider === 'groq') return 'https://api.groq.com/openai/v1/chat/completions';
+  if (provider === 'cerebras') return 'https://api.cerebras.ai/v1/chat/completions';
+  if (provider === 'mistral') return 'https://api.mistral.ai/v1/chat/completions';
+  if (provider === 'grok') return 'https://api.x.ai/v1/chat/completions';
+  if (provider === 'freellmapi') {
+    // FreeLLMAPI router: OpenAI-compatible /v1/chat/completions with full
+    // function calling (tools) support, incl. streaming tool_calls deltas.
+    // Base URL comes from the key's baseUrl, else FREE_LLM_API_URL env,
+    // else the local default http://localhost:3001/v1 (Termux or local dev).
+    const clean = (baseUrl || getFreeLLMAPIUrl()).trim().replace(/\/+$/, '');
+    if (clean.endsWith('/chat/completions')) return clean;
+    if (clean.endsWith('/v1')) return `${clean}/chat/completions`;
+    return `${clean}/v1/chat/completions`;
+  }
+  const clean = (baseUrl || 'https://models.inference.ai.azure.com').trim().replace(/\/+$/, '');
+  if (clean.endsWith('/chat/completions')) return clean;
+  if (clean.endsWith('/v1')) return `${clean}/chat/completions`;
+  return `${clean}/v1/chat/completions`;
+}
+
+export async function fetchLiveProviderModels(
+  provider: string,
+  apiKey?: string,
+  baseUrl?: string
+): Promise<Array<{ id: string; label: string; badge: string }>> {
+  const curated: Record<string, Array<{ id: string; label: string; badge: string }>> = {
+    gemini: [
+      { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', badge: 'Free · Ultra Fast' },
+      { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', badge: 'Free · Coding' },
+      { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite', badge: 'Free · 1500 RPD' },
+      { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro', badge: 'Pro · Architecture' },
+      { id: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen', badge: 'Deep Reasoning' },
+    ],
+    openrouter: [
+      { id: 'openrouter/free', label: 'OpenRouter Free Auto-Router', badge: 'Free · Auto' },
+      { id: 'qwen/qwen3-coder:free', label: 'Qwen3 Coder 480B (:free)', badge: 'Free · Coding' },
+      { id: 'deepseek/deepseek-r1:free', label: 'DeepSeek R1 (:free)', badge: 'Free · Reasoning' },
+      { id: 'deepseek/deepseek-chat-v3-0324:free', label: 'DeepSeek Chat V3 (:free)', badge: 'Free · General' },
+      { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B Instruct (:free)', badge: 'Free · 70B' },
+      { id: 'google/gemma-3-27b-it:free', label: 'Gemma 3 27B (:free)', badge: 'Free · Google' },
+      { id: 'mistralai/mistral-small-3.1-24b-instruct:free', label: 'Mistral Small 3.1 24B (:free)', badge: 'Free · Fast' },
+    ],
+    groq: [
+      { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B Versatile', badge: 'Free · Coding' },
+      { id: 'qwen/qwen3-32b', label: 'Qwen 3 32B', badge: 'Free · Reasoning' },
+      { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B Instant', badge: 'Free · Instant' },
+      { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B', badge: 'Free · 120B' },
+    ],
+    cerebras: [
+      { id: 'llama-3.3-70b', label: 'Llama 3.3 70B', badge: 'Free · Fast' },
+      { id: 'qwen-3-32b', label: 'Qwen 3 32B', badge: 'Free · Coding' },
+      { id: 'llama3.1-8b', label: 'Llama 3.1 8B', badge: 'Free · Instant' },
+    ],
+    mistral: [
+      { id: 'codestral-latest', label: 'Codestral Latest', badge: 'Free · Coding' },
+      { id: 'mistral-small-latest', label: 'Mistral Small Latest', badge: 'Free · Fast' },
+      { id: 'devstral-small-latest', label: 'Devstral Small', badge: 'Free · Agents' },
+    ],
+    grok: [
+      { id: 'grok-2-latest', label: 'Grok 2 Latest', badge: 'Default' },
+      { id: 'grok-3-mini', label: 'Grok 3 Mini', badge: 'Fast' },
+    ],
+    custom: [
+      { id: 'gpt-4o-mini', label: 'gpt-4o-mini', badge: 'Custom' },
+      { id: 'deepseek-r1', label: 'deepseek-r1', badge: 'Custom' },
+      { id: 'qwen2.5-coder-32b-instruct', label: 'qwen2.5-coder-32b-instruct', badge: 'Custom' },
+    ],
+    freellmapi: [
+      { id: 'auto:balanced', label: 'FreeLLMAPI Auto · Balanced (default)', badge: 'Free · Auto' },
+      { id: 'auto:fast', label: 'FreeLLMAPI Auto · Fast', badge: 'Free · Fast' },
+      { id: 'auto:smart', label: 'FreeLLMAPI Auto · Smart', badge: 'Free · Smart' },
+      { id: 'auto:reliable', label: 'FreeLLMAPI Auto · Reliable', badge: 'Free · Reliable' },
+      { id: 'auto:cheap', label: 'FreeLLMAPI Auto · Cheap', badge: 'Free · Cheap' },
+    ],
+  };
+
+  try {
+    if (provider === 'openrouter') {
+      const res = await fetch('https://openrouter.ai/api/v1/models', {
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const rawModels: any[] = json.data || [];
+        const freeModels = rawModels
+          .filter(m => String(m.id || '').endsWith(':free') || m.id === 'openrouter/free' || (m.pricing?.prompt === '0' && m.pricing?.completion === '0'))
+          .slice(0, 40)
+          .map(m => ({
+            id: m.id,
+            label: m.name || m.id,
+            badge: 'Free · Live',
+          }));
+        if (freeModels.length > 0) {
+          const hasAuto = freeModels.some(m => m.id === 'openrouter/free');
+          return hasAuto
+            ? freeModels
+            : [{ id: 'openrouter/free', label: 'OpenRouter Free Auto-Router', badge: 'Free · Auto' }, ...freeModels];
+        }
+      }
+    } else if (provider === 'gemini' && apiKey) {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const live = (json.models || [])
+          .filter((m: any) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+          .map((m: any) => {
+            const id = String(m.name || '').replace(/^models\//, '');
+            return { id, label: m.displayName || id, badge: 'Live · Gemini' };
+          })
+          .filter((m: any) => !m.id.includes('1.0') && !m.id.includes('1.5'))
+          .slice(0, 25);
+        if (live.length > 0) return live;
+      }
+    } else if (['groq', 'cerebras', 'mistral', 'grok', 'custom', 'freellmapi'].includes(provider) && apiKey) {
+      const chatUrl = getOpenAICompatibleEndpoint(provider, baseUrl);
+      const modelsUrl = chatUrl.replace(/\/chat\/completions$/, '/models');
+      const res = await fetch(modelsUrl, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const list = (json.data || [])
+          .map((m: any) => ({ id: m.id, label: m.id, badge: `Live · ${provider}` }))
+          .slice(0, 35);
+        if (list.length > 0) return list;
+      }
+    }
+  } catch (err) {
+    console.warn(`Live model fetch failed for ${provider}:`, err);
+  }
+
+  return curated[provider] || curated.custom;
+}
+
+// Normalize any model name according to active @google/genai & free provider guidelines
+export function normalizeModelName(provider: string, model?: string): string {
+  if (provider === 'gemini') {
+    if (!model) return 'gemini-3.5-flash-lite';
+    const lower = model.toLowerCase().trim();
+    // Re-route deprecated 2.5/2.0/1.5 models to gemini-3.5-flash-lite
+    if (
+      lower.includes('1.5') ||
+      lower.includes('2.0') ||
+      lower.includes('2.5') ||
+      lower.includes('gemini-pro') ||
+      lower.includes('flash-latest') ||
+      lower === 'gemini-flash'
+    ) {
+      return 'gemini-3.5-flash-lite';
+    }
+    const validGeminiModels = [
+      'gemini-3.5-flash-lite',
+      'gemini-3.8-flash',
+      'gemini-3.1-flash-lite',
+      'gemini-3.1-pro',
+      'gemini-4-hydrogen',
+      'gemini-4-argon',
+      'gemini-4-carbon',
+      'gemini-3.1-flash-lite-image',
+      'gemini-nano-banana-2.1',
+      'gemini-3-pro-image'
+    ];
+    if (validGeminiModels.includes(model)) return model;
+    return model.startsWith('gemini-') ? model : 'gemini-3.8-flash';
+  }
+  if (provider === 'openrouter') {
+    if (!model || model.trim() === '' || model.includes('gemini-2.0-flash-lite:free')) {
+      return 'openrouter/free';
+    }
+    return model.trim();
+  }
+  if (provider === 'groq') {
+    if (!model || model.trim() === '') return 'llama-3.3-70b-versatile';
+    return model.trim();
+  }
+  if (provider === 'cerebras') {
+    if (!model || model.trim() === '') return 'llama-3.3-70b';
+    return model.trim();
+  }
+  if (provider === 'mistral') {
+    if (!model || model.trim() === '') return 'codestral-latest';
+    return model.trim();
+  }
+  if (provider === 'grok') {
+    if (!model || model.trim() === '') return 'grok-2-latest';
+    return model.trim();
+  }
+  if (provider === 'freellmapi') {
+    // FreeLLMAPI router model strings: auto:<strategy> blends every enabled
+    // free model (balanced = default), auto:<profile> uses a named chain,
+    // or any explicit provider model id the router knows.
+    if (!model || model.trim() === '') return 'auto:balanced';
+    return model.trim();
+  }
+  if (provider === 'custom') {
+    return (model || 'gpt-4o-mini').trim();
+  }
+  return model || '';
+}
+
+// Build the FreeLLMAPI key entry.
+// MERGE: this entry ALWAYS exists now. With FREE_LLM_API_URL + FREE_LLM_API_KEY
+// set it points at the external FreeLLMAPI; otherwise it points at the
+// EMBEDDED router on this same service (internal URL + internal router key).
+// FREE_LLM_API_MODEL = router model, default auto:balanced (free-only blend).
+export function buildEnvFreeLLMAPIKey(): KeyConfig | null {
+  const apiKey = getFreeLLMAPIKey();
+  const external = Boolean((process.env.FREE_LLM_API_URL || '').trim() && (process.env.FREE_LLM_API_KEY || '').trim());
+  return {
+    id: 'env-freellmapi',
+    provider: 'freellmapi',
+    name: external ? 'FreeLLMAPI (external)' : 'Embedded router (internal)',
+    apiKey,
+    model: normalizeModelName('freellmapi', process.env.FREE_LLM_API_MODEL || 'auto:balanced'),
+    baseUrl: getFreeLLMAPIUrl(),
+    isActive: true,
+    rpmLimit: 60,
+    status: 'healthy',
+  };
+}
+
+// Build Gemini key entries from the environment list only.
+// GEMINI_API_KEYS=<key1>,<key2>,... — one key per Google Cloud project
+// (the user has 10, each from its own account). Quotas are PER PROJECT, not
+// per key: keys from different projects each carry their own Hydrogen quota,
+// so the pool multiplies capacity; keys from one project would share a cap.
+// A legacy single GEMINI_API_KEY is merged in if it is not already listed.
+// Key VALUES are never logged, never returned by any status endpoint, and
+// never persisted to .secrets.json — env vars own them.
+export function buildEnvGeminiKeys(): KeyConfig[] {
+  const seen = new Set<string>();
+  const out: KeyConfig[] = [];
+  const push = (raw: string, n: number) => {
+    const apiKey = (raw || '').trim().replace(/^["']|["']$/g, '');
+    if (!apiKey || seen.has(apiKey)) return;
+    seen.add(apiKey);
+    out.push({
+      id: `env-gemini-${n}`,
+      provider: 'gemini',
+      name: `Gemini key ${n} (env)`,
+      apiKey,
+      // Default model for the pool is Hydrogen (coding-first). Per-turn
+      // routing overrides the model via buildGeminiModelChain; the key
+      // itself is model-agnostic — rotation is per key, not per model.
+      model: 'gemini-4-hydrogen',
+      isActive: true,
+      // No assumed RPM limit: pacing uses the generic 15/min client-side
+      // throttle; the real limit is observed via 429s (see recordKeyRateLimit).
+      rpmLimit: 0,
+      status: 'healthy',
+    });
+  };
+  const list = (process.env.GEMINI_API_KEYS || '').split(',');
+  list.forEach((k, i) => push(k, i + 1));
+  if (process.env.GEMINI_API_KEY) push(process.env.GEMINI_API_KEY, out.length + 1);
+  return out;
+}
+
+// Build Groq key entries from the environment list only.
+// GROQ_API_KEYS=<key1>,<key2>,... — the user has 11. Groq free caps are PER
+// ORGANIZATION, not per key: keys in one org share one allowance (30 RPM /
+// 1,000 RPD per chat model, checked 27 Nov 2026), so rotation adds
+// availability, not multiplied quota — unlike Gemini project keys. Default
+// model is the fast free gpt-oss-20b (Tier 1); the coding chain can route a
+// Groq key to gpt-oss-120b when quality matters. Values never logged/shown.
+export function buildEnvGroqKeys(): KeyConfig[] {
+  const seen = new Set<string>();
+  const out: KeyConfig[] = [];
+  const list = (process.env.GROQ_API_KEYS || '').split(',');
+  list.forEach((raw, i) => {
+    const apiKey = (raw || '').trim().replace(/^["']|["']$/g, '');
+    if (!apiKey || seen.has(apiKey)) return;
+    seen.add(apiKey);
+    out.push({
+      id: `env-groq-${i + 1}`,
+      provider: 'groq',
+      name: `Groq key ${i + 1} (env)`,
+      apiKey,
+      model: 'openai/gpt-oss-20b',
+      isActive: true,
+      rpmLimit: 30,
+      status: 'healthy',
+    });
+  });
+  return out;
+}
+
+// Build OpenRouter key entries from the environment list only.
+// OPENROUTER_API_KEYS=<key1>,<key2>,... — the user has 8. OpenRouter free is
+// 50 requests/day TOTAL across free models (20 RPM, shared pool) — extra keys
+// do not multiply it; they add availability. The default model is the first
+// live :free model in the catalog (verified at boot/daily refresh), falling
+// back to particle-ai/particle-1:free (agentic coding model, verified free on
+// OpenRouter 27 Nov 2026) when the catalog is not loaded yet. The live chain
+// re-verifies the model on every turn — a stale default is dropped, never used.
+export async function buildEnvOpenRouterKeys(): Promise<KeyConfig[]> {
+  const liveDefault = (await firstOpenRouterFreeModel()) || 'particle-ai/particle-1:free';
+  const seen = new Set<string>();
+  const out: KeyConfig[] = [];
+  const list = (process.env.OPENROUTER_API_KEYS || '').split(',');
+  list.forEach((raw, i) => {
+    const apiKey = (raw || '').trim().replace(/^["']|["']$/g, '');
+    if (!apiKey || seen.has(apiKey)) return;
+    seen.add(apiKey);
+    out.push({
+      id: `env-openrouter-${i + 1}`,
+      provider: 'openrouter',
+      name: `OpenRouter key ${i + 1} (env)`,
+      apiKey,
+      model: liveDefault,
+      isActive: true,
+      rpmLimit: 20,
+      status: 'healthy',
+    });
+  });
+  return out;
+}
+
+// Load stored secrets from disk if exists
+export async function loadSecrets(): Promise<KeyConfig[]> {
+  let parsed: KeyConfig[] = [];
+  try {
+    const raw = await fs.readFile(SECRETS_FILE, 'utf-8');
+    parsed = JSON.parse(raw);
+    let modified = false;
+    for (const k of parsed) {
+      const normalized = normalizeModelName(k.provider, k.model);
+      if (normalized !== k.model) {
+        k.model = normalized;
+        modified = true;
+      }
+    }
+    if (modified) {
+      await fs.writeFile(SECRETS_FILE, JSON.stringify(parsed, null, 2), 'utf-8').catch(() => {});
+    }
+  } catch {
+    parsed = [];
+  }
+  // Env-seeded FreeLLMAPI key always comes first and is never stale:
+  // the env var is the source of truth, so drop any persisted copy.
+  const withoutEnv = parsed.filter(k => k.id !== 'env-freellmapi' && !k.id.startsWith('env-gemini-') && !k.id.startsWith('env-groq-') && !k.id.startsWith('env-openrouter-'));
+  const envKey = buildEnvFreeLLMAPIKey();
+  const envGeminiKeys = buildEnvGeminiKeys();
+  const envGroqKeys = buildEnvGroqKeys();
+  const envOpenRouterKeys = await buildEnvOpenRouterKeys();
+  const head = [...(envKey ? [envKey] : []), ...envGeminiKeys, ...envGroqKeys, ...envOpenRouterKeys];
+  return head.length ? [...head, ...withoutEnv] : withoutEnv;
+}
+
+// Save secrets to disk
+export async function saveSecrets(keys: KeyConfig[]): Promise<void> {
+  try {
+    // Never persist env-seeded keys: env vars own them (FreeLLMAPI key and
+    // the GEMINI_API_KEYS / GROQ_API_KEYS / OPENROUTER_API_KEYS lists).
+    // Persisted copies would leak key material.
+    const toSave = keys.filter(k => k.id !== 'env-freellmapi' && !k.id.startsWith('env-gemini-') && !k.id.startsWith('env-groq-') && !k.id.startsWith('env-openrouter-'));
+    for (const k of toSave) {
+      k.model = normalizeModelName(k.provider, k.model);
+    }
+    await fs.writeFile(SECRETS_FILE, JSON.stringify(toSave, null, 2), 'utf-8');
+  } catch (err) {
+    console.error("Failed to save secrets to disk:", err);
+  }
+}
+
+// Clean old timestamps and return stats
+function getOrCreateStats(keyId: string): KeyRuntimeStats {
+  let stats = keyStatsMap.get(keyId);
+  if (!stats) {
+    stats = {
+      timestamps: [],
+      cooldownUntil: 0,
+      totalRequests: 0,
+      lastError: null,
+      lastUsedAt: 0,
+      limitKind: null,
+      limitAt: 0,
+      dailyResetAt: 0,
+    };
+    keyStatsMap.set(keyId, stats);
+  }
+  const now = Date.now();
+  stats.timestamps = stats.timestamps.filter(ts => now - ts < 60_000);
+  return stats;
+}
+
+// Check real-time status of all keys
+export function getKeyPoolStatus(keys: KeyConfig[]) {
+  const now = Date.now();
+  return keys.map(k => {
+    const stats = getOrCreateStats(k.id);
+    const inCooldown = stats.cooldownUntil > now;
+    const cooldownRemainingSec = inCooldown ? Math.ceil((stats.cooldownUntil - now) / 1000) : 0;
+    const requestsThisMinute = stats.timestamps.length;
+    
+    let status: 'healthy' | 'cooldown' | 'error' = 'healthy';
+    if (inCooldown) status = 'cooldown';
+    else if (stats.lastError && requestsThisMinute === 0) status = 'error';
+
+    // RPM vs RPD, in plain words — never a raw 429 in the UI.
+    const limitKind = stats.limitKind || null;
+    const retryInSec = limitKind === 'rpm' || limitKind === 'tpm' ? cooldownRemainingSec : 0;
+    return {
+      id: k.id,
+      provider: k.provider,
+      name: k.name,
+      model: k.model,
+      isActive: k.isActive,
+      rpmLimit: k.rpmLimit,
+      status,
+      isPinned: k.id === lastSuccessfulKeyId,
+      cooldownUntil: stats.cooldownUntil,
+      cooldownRemainingSec,
+      requestsThisMinute,
+      totalRequests: stats.totalRequests,
+      lastError: stats.lastError,
+      lastUsedAt: stats.lastUsedAt,
+      limitKind,
+      limitLabel: limitKind ? limitLabel(limitKind, limitKind === 'rpd' ? undefined : Math.max(1, retryInSec)) : null,
+      dailyResetAt: limitKind === 'rpd' && stats.dailyResetAt ? stats.dailyResetAt : null,
+      retryInSec,
+    };
+  });
+}
+
+// Select the optimal key from the pool:
+// 1) Remembers and prioritizes the previously working sticky key first
+// 2) Keeps rotating through EVERY active key in the pool until a working one is found
+export function selectBestKey(
+  keys: KeyConfig[],
+  preferredProvider: string = 'all',
+  excludeKeyIds: Set<string> = new Set(),
+  clientStickyKeyId?: string | null
+): { key: KeyConfig | null; reason?: string } {
+  const now = Date.now();
+  
+  // Active and not yet tried in this request
+  let candidates = keys.filter(k => k.isActive && !excludeKeyIds.has(k.id));
+
+  // Filter by provider preference if specified and available
+  if (preferredProvider && preferredProvider !== 'all') {
+    const filtered = candidates.filter(k => k.provider === preferredProvider);
+    if (filtered.length > 0) candidates = filtered;
+  }
+
+  if (candidates.length === 0) {
+    return { key: null, reason: 'No active keys remaining to try.' };
+  }
+
+  // Prefer keys not currently in cooldown; if all remaining keys are in a soft cooldown (not 401-disabled), still allow testing them!
+  const readyKeys = candidates.filter(k => {
+    const stats = getOrCreateStats(k.id);
+    return stats.cooldownUntil <= now;
+  });
+
+  const nonPermanentErrorKeys = candidates.filter(k => {
+    const stats = getOrCreateStats(k.id);
+    return !stats.lastError?.includes('Invalid API key');
+  });
+
+  const effectiveReady = readyKeys.length > 0
+    ? readyKeys
+    : (nonPermanentErrorKeys.length > 0 ? nonPermanentErrorKeys : candidates);
+
+  // Filter out keys that have reached their RPM quota if others have spare RPM
+  const underRpmKeys = effectiveReady.filter(k => {
+    const stats = getOrCreateStats(k.id);
+    return stats.timestamps.length < (k.rpmLimit || 15);
+  });
+
+  const pool = underRpmKeys.length > 0 ? underRpmKeys : effectiveReady;
+
+  // 1. Prioritize user-configured keys ahead of fallback studio_primary_key
+  const customKeysPool = pool.filter(k => k.id !== 'studio_primary_key');
+  const prioritizedPool = customKeysPool.length > 0 ? customKeysPool : pool;
+
+  // 2. Sticky Key: Always try the remembered working key FIRST (unless already failed/excluded in this request)
+  const stickyId = lastSuccessfulKeyId || clientStickyKeyId || null;
+  if (stickyId && !excludeKeyIds.has(stickyId)) {
+    const preferredKey = prioritizedPool.find(k => k.id === stickyId);
+    if (preferredKey) {
+      return { key: preferredKey, reason: 'পূর্বের সচল কী অগ্রাধিকার পেয়েছে (Remembered Working Key)' };
+    }
+  }
+
+  // 3. Otherwise pick the key with lowest RPM load (and earliest cooldown expiry if retrying)
+  prioritizedPool.sort((a, b) => {
+    const statsA = getOrCreateStats(a.id);
+    const statsB = getOrCreateStats(b.id);
+    if (statsA.cooldownUntil !== statsB.cooldownUntil) {
+      return statsA.cooldownUntil - statsB.cooldownUntil;
+    }
+    return statsA.timestamps.length - statsB.timestamps.length;
+  });
+
+  return { key: prioritizedPool[0] };
+}
+
+// Smart RPM pacing to protect free models from exhausting per-minute rate limits during multi-step tool loops
+async function paceAndTrackKeyRound(
+  trackedKey: KeyConfig | undefined,
+  round: number,
+  sendEvent?: (data: any) => void
+): Promise<void> {
+  if (!trackedKey) return;
+  const stats = getOrCreateStats(trackedKey.id);
+  const now = Date.now();
+  const rpmLimit = Math.max(3, trackedKey.rpmLimit || 15);
+
+  // If near per-minute limit, pause smoothly until the oldest request in the 60s window expires (max 6s wait)
+  if (stats.timestamps.length >= rpmLimit - 1 && stats.timestamps.length > 0) {
+    const oldest = stats.timestamps[0];
+    const waitMs = Math.min(6000, Math.max(1200, 60_500 - (now - oldest)));
+    if (sendEvent) {
+      sendEvent({
+        type: 'action',
+        action: `⏱️ ${trackedKey.name}-এর ফ্রি RPM লিমিট (${stats.timestamps.length}/${rpmLimit}) বাঁচাতে ${(waitMs / 1000).toFixed(1)}s স্মার্ট পেসিং...`
+      });
+    }
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  } else if (round > 0 && trackedKey.id !== 'studio_primary_key') {
+    // Gentle anti-burst spacing between consecutive agentic tool rounds on free keys
+    await new Promise(resolve => setTimeout(resolve, 650));
+  }
+
+  const freshStats = getOrCreateStats(trackedKey.id);
+  freshStats.timestamps.push(Date.now());
+  freshStats.lastUsedAt = Date.now();
+}
+
+// Record successful request on key and remember it persistently
+export function recordKeySuccess(keyId: string) {
+  persistStickyKeyId(keyId);
+  const stats = getOrCreateStats(keyId);
+  const now = Date.now();
+  stats.timestamps.push(now);
+  stats.totalRequests++;
+  stats.lastUsedAt = now;
+  stats.cooldownUntil = 0;
+  stats.lastError = null;
+}
+
+// Record error / cooldown on key
+export function recordKeyCooldown(keyId: string, durationSec: number = 60, errorMsg?: string) {
+  const stats = getOrCreateStats(keyId);
+  stats.cooldownUntil = Date.now() + durationSec * 1000;
+  stats.lastError = errorMsg || 'Rate limit or failure';
+}
+
+/**
+ * Record a 429 / quota hit on a key, distinguishing the budget it hit.
+ * RPM/TPM: per-minute budget, rolling reset — short cooldown (~65s or the
+ * Retry-After value); the request rotates to the next key immediately.
+ * RPD: daily wall — cooldown until midnight Pacific; the key is out for the
+ * day. The stored lastError is a human label, never a raw 429.
+ */
+export function recordKeyRateLimit(keyId: string, kind: RateLimitKind, retryAfterSec?: number | null, errorMsg?: string) {
+  const stats = getOrCreateStats(keyId);
+  const now = Date.now();
+  stats.limitKind = kind;
+  stats.limitAt = now;
+  if (kind === 'rpd') {
+    const resetAt = nextMidnightPacificMs(now);
+    stats.dailyResetAt = resetAt;
+    stats.cooldownUntil = resetAt;
+    stats.lastError = 'daily limit — resets midnight Pacific';
+  } else {
+    const waitSec = Math.max(65, retryAfterSec ?? 65);
+    stats.dailyResetAt = 0;
+    stats.cooldownUntil = now + waitSec * 1000;
+    stats.lastError = limitLabel(kind, waitSec);
+  }
+  if (errorMsg) {
+    // Keep the provider detail in the log only via the caller; the UI shows limitLabel.
+    void errorMsg;
+  }
+}
+
+// Test an API key connectivity
+export async function testApiKey(
+  provider: string,
+  apiKey: string,
+  model?: string,
+  baseUrl?: string
+): Promise<{ success: boolean; latencyMs: number; message?: string }> {
+  const start = Date.now();
+  try {
+    if (provider === 'gemini') {
+      const cleanKey = apiKey.trim().replace(/^["']|["']$/g, '');
+      const targetModel = normalizeModelName('gemini', model);
+      try {
+        const client = new GoogleGenAI({
+          apiKey: cleanKey,
+          httpOptions: {
+            headers: {
+              'User-Agent': 'aistudio-build'
+            }
+          }
+        });
+        const res = await client.models.generateContent({
+          model: targetModel,
+          contents: 'Hi. Reply with only one word: OK'
+        });
+        const latencyMs = Date.now() - start;
+        const text = res.text || '';
+        return { success: true, latencyMs, message: `Connected (${targetModel}) in ${latencyMs}ms: ${text.trim().slice(0, 20)}` };
+      } catch (geminiErr: any) {
+        const rawMsg = geminiErr.message || '';
+        // If AQ. key is a Vertex AI Express Mode key, also try vertexai: true before failing
+        if (cleanKey.startsWith('AQ.') && /ACCESS_TOKEN_TYPE_UNSUPPORTED|API key not valid/i.test(rawMsg)) {
+          try {
+            const vertexClient = new GoogleGenAI({
+              vertexai: true,
+              apiKey: cleanKey,
+              httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+            });
+            const vRes = await vertexClient.models.generateContent({
+              model: targetModel,
+              contents: 'Hi. Reply with only one word: OK'
+            });
+            const latencyMs = Date.now() - start;
+            return { success: true, latencyMs, message: `Connected via Vertex Express (${targetModel}) in ${latencyMs}ms: ${(vRes.text || '').trim().slice(0, 20)}` };
+          } catch {
+            // Fall through to helpful AQ. error diagnosis below
+          }
+        }
+        const latencyMs = Date.now() - start;
+        if (/ACCESS_TOKEN_TYPE_UNSUPPORTED/i.test(rawMsg)) {
+          return {
+            success: false,
+            latencyMs,
+            message: `Google সার্ভার এই AQ. কী-টি গ্রহণ করেনি (401 ACCESS_TOKEN_TYPE_UNSUPPORTED)। কারণ: (১) Google Cloud Console > Credentials-এ "API restrictions"-এ ভুল করে "Gemini API" দেওয়া থাকলে পরিবর্তন করে "Generative Language API" করুন অথবা "Don't restrict key" রাখুন; অথবা (২) কী-টি বাতিল/সীমাবদ্ধ হলে aistudio.google.com থেকে নতুন প্রজেক্টে নতুন কী তৈরি করুন।`
+          };
+        }
+        return { success: false, latencyMs, message: rawMsg };
+      }
+    }
+
+    if (['openrouter', 'groq', 'cerebras', 'mistral', 'grok', 'custom', 'freellmapi'].includes(provider)) {
+      const targetModel = normalizeModelName(provider, model);
+      const endpoint = getOpenAICompatibleEndpoint(provider, baseUrl);
+      const extraHeaders: Record<string, string> = provider === 'openrouter'
+        ? { 'HTTP-Referer': 'https://nexus-ai.local', 'X-Title': 'Nexus AI' }
+        : {};
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          ...extraHeaders,
+        },
+        body: JSON.stringify({
+          model: targetModel,
+          messages: [{ role: 'user', content: 'Reply with one word: OK' }],
+          max_tokens: 10,
+        }),
+      });
+      const latencyMs = Date.now() - start;
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        const rawMsg = errorData.error?.message || `${provider} returned status ${res.status}`;
+        if (provider === 'openrouter' && rawMsg.includes('User not found')) {
+          return {
+            success: false,
+            latencyMs,
+            message: "User not found: এই OpenRouter কী-টি অকার্যকর বা মেয়াদোত্তীর্ণ।"
+          };
+        }
+        return { success: false, latencyMs, message: rawMsg };
+      }
+      return { success: true, latencyMs, message: `Connected to ${provider.toUpperCase()} (${targetModel}) in ${latencyMs}ms.` };
+    }
+
+    return { success: false, latencyMs: 0, message: `Unknown provider: ${provider}` };
+  } catch (err: any) {
+    return { success: false, latencyMs: Date.now() - start, message: err.message || 'Connection failed' };
+  }
+}
+
+// Re-export website, PWA deployer, and chat history sanitizer
+export { autoDeployWebsiteFromText, prepareGeminiHistoryAndLastMessage } from "./websiteDeployer.ts";
+
+export type ActionStepKind = 'thought' | 'command' | 'read' | 'edit' | 'build' | 'qc' | 'restart' | 'respond' | 'agent';
+
+export function emitActionStep(
+  sendEvent: (data: any) => void,
+  kind: ActionStepKind,
+  label: string,
+  detail?: string,
+  options?: {
+    id?: string;
+    status?: 'running' | 'done' | 'error';
+    toolName?: string;
+    filePath?: string;
+    durationSec?: number;
+    isError?: boolean;
+  }
+): string {
+  const stepId = options?.id || `step_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  sendEvent({
+    type: "action_step",
+    step: {
+      id: stepId,
+      kind,
+      label,
+      detail,
+      status: options?.status || 'done',
+      toolName: options?.toolName,
+      filePath: options?.filePath,
+      durationSec: options?.durationSec,
+      isError: options?.isError,
+      timestamp: Date.now()
+    }
+  });
+  return stepId;
+}
+
+function mapToolToActionStep(toolName: string, args: any): { kind: ActionStepKind; label: string; detail: string; filePath?: string } {
+  let kind: ActionStepKind = 'command';
+  let label = 'Ran command';
+
+  if (toolName === 'fileRead' || toolName === 'view_file') {
+    kind = 'read';
+    label = 'Read file';
+  } else if (toolName === 'read_skill') {
+    kind = 'thought';
+    label = 'Loaded coding skill';
+  } else if (toolName === 'analyze_project') {
+    kind = 'read';
+    label = 'Analyzed workspace project';
+  } else if (toolName === 'grep_search') {
+    kind = 'read';
+    label = 'Searched code (grep)';
+  } else if (toolName === 'find_by_name') {
+    kind = 'read';
+    label = 'Found workspace files';
+  } else if (toolName === 'list_dir' || toolName === 'listDir') {
+    kind = 'read';
+    label = 'Listed directory';
+  } else if (toolName === 'fileWrite' || toolName === 'write_to_file') {
+    kind = 'edit';
+    label = 'Wrote file';
+  } else if (toolName === 'fileEdit' || toolName === 'replace_file_content' || toolName === 'multi_replace_file_content') {
+    kind = 'edit';
+    label = 'Edited file';
+  } else if (toolName === 'delete_file' || toolName === 'fileDelete' || toolName === 'delete_dir' || toolName === 'move' || toolName === 'moveFile') {
+    kind = 'edit';
+    label = 'Updated workspace files';
+  } else if (toolName === 'install_applet_package' || toolName === 'installPackage' || toolName === 'install_applet_dependencies') {
+    kind = 'build';
+    label = 'Installed dependencies';
+  } else if (toolName === 'compileProject' || toolName === 'compile_applet') {
+    kind = 'build';
+    label = 'Built project';
+  } else if (toolName === 'lintProject' || toolName === 'lint_applet' || toolName === 'detect_secrets') {
+    kind = 'qc';
+    label = toolName === 'detect_secrets' ? 'Scanned for secrets' : 'Ran quality control';
+  } else if (toolName === 'restartServer' || toolName === 'restart_dev_server') {
+    kind = 'restart';
+    label = 'Restarted dev server';
+  } else if (toolName === 'manage_task') {
+    kind = 'command';
+    label = `Managed background task (${args?.Action || 'status'})`;
+  } else if (toolName === 'git_status' || toolName === 'git_diff') {
+    kind = 'read';
+    label = toolName === 'git_status' ? 'Checked git status' : 'Inspected git diff';
+  } else if (toolName === 'search_web' || toolName === 'webSearch' || toolName === 'webFetch') {
+    kind = 'command';
+    label = toolName === 'webFetch' ? 'Fetched webpage' : 'Searched web';
+  } else if (toolName === 'generate_image' || toolName === 'generateImage') {
+    kind = 'edit';
+    label = 'Generated image';
+  } else if (toolName === 'code_execution_sandbox') {
+    kind = 'command';
+    label = `Executed ${args?.Language || 'code'} in Sandbox`;
+  } else if (toolName === 'read_multiple_files') {
+    kind = 'read';
+    label = `Read ${(args?.FilePaths || []).length} files (Multi-File Context)`;
+  } else if (toolName === 'compute_file_diff') {
+    kind = 'read';
+    label = 'Computed file diff';
+  } else if (toolName === 'debug_error_analysis') {
+    kind = 'qc';
+    label = 'Analyzed error & diagnostics';
+  } else if (toolName === 'claw_doctor') {
+    kind = 'qc';
+    label = 'Ran Claw Doctor health check';
+  } else if (toolName === 'claw_status') {
+    kind = 'thought';
+    label = 'Checked Claw harness status';
+  } else if (toolName === 'claw_acp') {
+    kind = 'thought';
+    label = 'Checked Agent Client Protocol';
+  } else if (toolName === 'claw_prompt') {
+    kind = 'command';
+    label = `Dispatched Claw prompt (${args?.role || 'agent'})`;
+  } else if (toolName === 'omo_coordinate') {
+    kind = 'agent';
+    label = 'Orchestrated OmO Multi-Agent coordination';
+  } else if (toolName === 'omx_protocol') {
+    kind = 'agent';
+    label = 'Constructed OmX Execution Protocol';
+  } else if (toolName === 'clawhip_router') {
+    kind = 'command';
+    label = `Routed ClawHip event (${args?.action || 'stream'})`;
+  } else if (toolName === 'lazycodex_runner') {
+    kind = 'command';
+    label = 'Executed LazyCodex autonomous engine';
+  } else if (toolName === 'ask_question' || toolName === 'plan') {
+    kind = 'thought';
+    label = toolName === 'plan' ? 'Created implementation plan' : 'Asked clarifying questions';
+  } else if (toolName === 'verify_live_preview') {
+    kind = 'qc';
+    label = 'Verified live preview';
+  } else if (toolName === 'set_up_firebase') {
+    kind = 'build';
+    label = 'Provisioned Firebase & Firestore';
+  } else if (toolName === 'deploy_firebase') {
+    kind = 'build';
+    label = 'Deployed firestore.rules';
+  } else if (toolName === 'set_up_oauth' || toolName === 'remove_oauth') {
+    kind = 'command';
+    label = toolName === 'remove_oauth' ? 'Removed OAuth scopes' : 'Configured OAuth client & scopes';
+  } else if (toolName === 'cloudsql_execute_sql') {
+    kind = 'command';
+    label = 'Executed SQL query on Cloud SQL';
+  } else if (toolName === 'cloudsql_update_schema') {
+    kind = 'build';
+    label = 'Updated database schema (Drizzle ORM)';
+  } else if (toolName === 'figma_import') {
+    kind = 'edit';
+    label = 'Imported Figma design spec';
+  } else if (toolName === 'focus_mode') {
+    kind = 'edit';
+    label = `Focus Mode edit (${args?.cssSelector || 'target'})`;
+  } else if (toolName === 'schedule') {
+    kind = 'command';
+    label = `Scheduled background timer (${args?.DurationSeconds || 5}s)`;
+  }
+
+  const filePath =
+    args?.TargetFile ||
+    args?.AbsolutePath ||
+    args?.filePath ||
+    args?.DestinationPath ||
+    undefined;
+
+  const detail =
+    filePath ||
+    args?.SkillName ||
+    (Array.isArray(args?.FilePaths) ? args.FilePaths.join(', ') : '') ||
+    args?.Language ||
+    args?.Pattern ||
+    args?.CommandLine ||
+    args?.command ||
+    args?.query ||
+    args?.task ||
+    args?.goal ||
+    args?.prompt ||
+    args?.Prompt ||
+    args?.message ||
+    (Array.isArray(args?.PackageNames) ? args.PackageNames.join(', ') : args?.packageName) ||
+    args?.TaskId ||
+    '';
+
+  return { kind, label, detail, filePath };
+}
+
+async function executeToolWithLiveEvents(
+  callName: string,
+  callArgs: any,
+  sendEvent: (data: any) => void,
+  execCtx: ToolExecutionContext
+): Promise<any> {
+  const mapped = mapToolToActionStep(callName, callArgs);
+  const stepId = `step_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const startTime = Date.now();
+
+  // Emit live "running" step immediately before execution
+  emitActionStep(sendEvent, mapped.kind, mapped.label, mapped.detail, {
+    id: stepId,
+    status: 'running',
+    toolName: callName,
+    filePath: mapped.filePath,
+  });
+
+  const toolResult = await executeServerTool(
+    callName,
+    callArgs,
+    (action) => sendEvent({ type: "action", action }),
+    execCtx
+  );
+
+  const durationSec = Math.max(0.1, Number(((Date.now() - startTime) / 1000).toFixed(1)));
+  const hasError = Boolean(toolResult?.error || toolResult?.success === false);
+
+  // Update the same step to "done" or "error"
+  emitActionStep(
+    sendEvent,
+    mapped.kind,
+    hasError ? `${mapped.label} (failed)` : mapped.label,
+    hasError ? String(toolResult?.error || toolResult?.message || mapped.detail).slice(0, 140) : mapped.detail,
+    {
+      id: stepId,
+      status: hasError ? 'error' : 'done',
+      toolName: callName,
+      filePath: toolResult?.cleanPath || mapped.filePath,
+      durationSec,
+      isError: hasError,
+    }
+  );
+
+  // Emit structured real file modification events
+  if (!hasError) {
+    if (['write_to_file', 'fileWrite', 'replace_file_content', 'fileEdit', 'multi_replace_file_content'].includes(callName)) {
+      const fp = (toolResult?.cleanPath || (toolResult?.path || mapped.filePath || '').replace(/^\/+/, '')).trim();
+      if (fp) {
+        sendEvent({
+          type: 'file_modified',
+          filePath: fp,
+          action: callName.includes('write') || callName.includes('Write') ? 'created' : 'edited',
+        });
+      }
+    } else if (callName === 'delete_file' || callName === 'fileDelete') {
+      const fp = (mapped.filePath || '').replace(/^\/+/, '').trim();
+      if (fp) sendEvent({ type: 'file_modified', filePath: fp, action: 'deleted' });
+    } else if (callName === 'move' || callName === 'moveFile') {
+      const fp = (callArgs?.DestinationPath || callArgs?.destinationPath || '').replace(/^\/+/, '').trim();
+      if (fp) sendEvent({ type: 'file_modified', filePath: fp, action: 'moved' });
+    } else if (Array.isArray(toolResult?.modifiedFiles)) {
+      for (const fp of toolResult.modifiedFiles) {
+        sendEvent({ type: 'file_modified', filePath: fp, action: 'created' });
+      }
+    } else if (callName === 'deploy_firebase') {
+      sendEvent({ type: 'file_modified', filePath: 'firestore.rules', action: 'edited' });
+    } else if (callName === 'cloudsql_update_schema' && toolResult?.schemaPath) {
+      const rel = path.relative(process.cwd(), toolResult.schemaPath);
+      sendEvent({ type: 'file_modified', filePath: rel || 'src/db/schema.ts', action: 'edited' });
+    }
+
+    // If an HTML website/PWA file was written/edited via tool, trigger Live Preview immediately!
+    if (toolResult?.previewUrl) {
+      sendEvent({
+        type: "action",
+        action: `✓ Live Preview updated (${toolResult.previewUrl})`,
+      });
+      sendEvent({
+        type: "preview_ready",
+        url: toolResult.previewUrl,
+        html: toolResult.deployedHtml,
+        sessionId: execCtx.sessionId,
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  if ((callName === "generateImage" || callName === "generate_image") && toolResult?.imageUrl) {
+    sendEvent({ type: "image", imageUrl: toolResult.imageUrl });
+  }
+
+  return toolResult;
+}
+
+const KNOWN_TOOL_NAMES = new Set(
+  serverTools.map((t) => t.name).filter((n): n is string => Boolean(n))
+);
+
+const OPENAI_CORE_TOOL_NAMES = new Set([
+  'read_skill',
+  'analyze_project',
+  'view_file',
+  'list_dir',
+  'grep_search',
+  'find_by_name',
+  'write_to_file',
+  'replace_file_content',
+  'multi_replace_file_content',
+  'install_applet_package',
+  'compile_applet',
+  'lint_applet',
+  'run_command',
+  'omo_coordinate',
+  'debug_error_analysis',
+  'code_execution_sandbox',
+  'set_up_firebase',
+  'deploy_firebase',
+  'search_web',
+  'webFetch',
+  'generate_image',
+  'restart_dev_server',
+  'ask_question',
+  'verify_live_preview',
+  'cloudsql_execute_sql',
+  // Hardening (2026-11-27): high-value working tools the model could not
+  // call before — git inspection, multi-read, diff, secret scan, file move/
+  // delete, plan registration, background-task management, project installs.
+  // NOTE: 'schedule' is deliberately NOT here — its implementation only
+  // returns a message and sets no timer (nothing ever fires). Real
+  // scheduling is queue_job + remind (Nexus scheduler).
+  'plan',
+  'manage_task',
+  'git_status',
+  'git_diff',
+  'read_multiple_files',
+  'compute_file_diff',
+  'detect_secrets',
+  'move',
+  'delete_file',
+  'delete_dir',
+  'install_applet_dependencies',
+  // Agent memory / lessons / jobs
+  'save_memory',
+  'read_memory',
+  'save_lesson',
+  'queue_job',
+  // Nexus tools (37) — every one has a working implementation in
+  // server/nexusTools.ts and is delegated in geminiService.executeServerTool.
+  'github_push',
+  'github_create_repo',
+  'github_repos',
+  'github_file',
+  'github_issues',
+  'github_prs',
+  'github_create_issue',
+  'github_create_pr',
+  'github_pull_request',
+  'github_actions',
+  'github_release',
+  'github_code_search',
+  'github_import',
+  'build_page',
+  'build_site',
+  'deploy_site',
+  'web_search',
+  'read_page',
+  'generate_image_pollinations',
+  'file_grep',
+  'local_rag',
+  'vector_store',
+  'public_api_discovery',
+  'free_tier_directory',
+  'desh_api',
+  'browse_task',
+  'browse_job',
+  'browse_vision',
+  'browse_resume',
+  'gmail_list',
+  'gmail_search',
+  'gmail_send',
+  'gmail_draft',
+  'calendar_list',
+  'calendar_create',
+  'drive_list',
+  'docs_create',
+  'docs_read',
+  'remind',
+  'goals',
+  'scheduled_browse',
+]);
+
+interface PendingQuestionEntry {
+  resolve: (val: { answers: Record<string, string[]>; skipped?: boolean; notes?: string }) => void;
+  timer: NodeJS.Timeout;
+}
+
+const pendingQuestionResolvers = new Map<string, PendingQuestionEntry>();
+
+export function resolvePendingQuestion(
+  questionId: string,
+  payload: { answers?: Record<string, string[]>; skipped?: boolean; notes?: string }
+): boolean {
+  const entry = pendingQuestionResolvers.get(questionId);
+  if (!entry) return false;
+  clearTimeout(entry.timer);
+  pendingQuestionResolvers.delete(questionId);
+  entry.resolve({
+    answers: payload?.answers || {},
+    skipped: Boolean(payload?.skipped),
+    notes: payload?.notes || '',
+  });
+  return true;
+}
+
+function extractAndStripTextToolCalls(rawText: string): {
+  calls: Array<{ name: string; args: any }>;
+  cleanedText: string;
+} {
+  if (!rawText) return { calls: [], cleanedText: '' };
+
+  const calls: Array<{ name: string; args: any }> = [];
+  let cleaned = rawText;
+
+  const pushParsedCall = (item: any) => {
+    if (!item || typeof item !== 'object') return;
+    const fnName = item.name || item.function?.name || item.tool;
+    if (!fnName || !KNOWN_TOOL_NAMES.has(fnName)) return;
+    let args = item.arguments ?? item.args ?? item.parameters ?? item.function?.arguments ?? {};
+    if (typeof args === 'string') {
+      try {
+        args = JSON.parse(args);
+      } catch {
+        args = {};
+      }
+    }
+    calls.push({ name: fnName, args: args && typeof args === 'object' ? args : {} });
+  };
+
+  const tryParseToolJsonBlock = (candidate: string): boolean => {
+    const trimmed = candidate.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return false;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        const before = calls.length;
+        parsed.forEach(pushParsedCall);
+        return calls.length > before;
+      }
+      if (Array.isArray(parsed.tool_calls)) {
+        const before = calls.length;
+        parsed.tool_calls.forEach(pushParsedCall);
+        return calls.length > before;
+      }
+      if (parsed.name && KNOWN_TOOL_NAMES.has(parsed.name)) {
+        pushParsedCall(parsed);
+        return true;
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  };
+
+  // 1. <tool_call>...</tool_call> or <function_call>...</function_call>
+  cleaned = cleaned.replace(/<(?:tool_call|function_call)>([\s\S]*?)<\/(?:tool_call|function_call)>/gi, (full, inner) => {
+    return tryParseToolJsonBlock(inner) ? '' : full;
+  });
+
+  // 2. Fenced ```json ... ``` or ``json ... `` blocks containing tool_calls or single known tool object
+  cleaned = cleaned.replace(/`{2,3}(?:json)?\s*([\s\S]*?)`{2,3}/gi, (full, inner) => {
+    if (!inner.includes('"tool_calls"') && !inner.includes('"arguments"') && !inner.includes('"name"')) {
+      return full;
+    }
+    return tryParseToolJsonBlock(inner) ? '' : full;
+  });
+
+  // 3. Unfenced (or unclosed fenced) {"tool_calls": [...]} JSON object
+  const toolCallsMatch = cleaned.match(/`{0,3}(?:json)?\s*\{\s*"tool_calls"\s*:/i);
+  if (toolCallsMatch && typeof toolCallsMatch.index === 'number') {
+    const startIdx = toolCallsMatch.index;
+    const jsonStartIdx = cleaned.indexOf('{', startIdx);
+    let depth = 0;
+    let inStr = false;
+    let escaped = false;
+    let endIdx = -1;
+    for (let i = jsonStartIdx; i < cleaned.length; i++) {
+      const ch = cleaned[i];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inStr = !inStr;
+        continue;
+      }
+      if (!inStr) {
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            endIdx = i + 1;
+            break;
+          }
+        }
+      }
+    }
+    if (endIdx !== -1) {
+      const slice = cleaned.slice(jsonStartIdx, endIdx);
+      if (tryParseToolJsonBlock(slice)) {
+        let after = cleaned.slice(endIdx).replace(/^\s*`{1,3}/, '');
+        cleaned = (cleaned.slice(0, startIdx) + after).trim();
+      }
+    } else {
+      // Truncated tool_calls JSON at end of stream: try salvaging complete { "name": ... } objects and strip raw JSON noise
+      const tail = cleaned.slice(jsonStartIdx);
+      const itemMatches = tail.match(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g) || [];
+      for (const itemStr of itemMatches) {
+        tryParseToolJsonBlock(itemStr);
+      }
+      cleaned = cleaned.slice(0, startIdx).trim();
+    }
+  }
+
+  // Clean up stray backtick artifacts left behind when models wrap tool JSON weirdly
+  cleaned = cleaned
+    .replace(/(?:^|\n)\s*`{1,3}\s*(?=\n|$)/g, '\n')
+    .replace(/`{2,3}\s*$/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  return { calls, cleanedText: cleaned };
+}
+
+function getSafeStreamableText(rawText: string): string {
+  // Prevent partial <tool_call> or ```json { "tool_calls" ... from flashing in UI while streaming
+  let safe = rawText;
+  const openTagIdx = safe.search(/<(?:tool_call|function_call)/i);
+  if (openTagIdx !== -1 && !/<\/(?:tool_call|function_call)>/i.test(safe.slice(openTagIdx))) {
+    safe = safe.slice(0, openTagIdx);
+  }
+  const jsonToolIdx = safe.search(/`{0,3}(?:json)?\s*\{\s*"tool_calls"\s*:/i);
+  if (jsonToolIdx !== -1) {
+    safe = safe.slice(0, jsonToolIdx);
+  }
+  const { cleanedText } = extractAndStripTextToolCalls(safe);
+  return cleanedText
+    .replace(/(?:^|\n)\s*`{1,3}\s*(?=\n|$)/g, '\n')
+    .replace(/`{1,3}\s*$/g, '')
+    .trimEnd();
+}
+
+function isActionOrBuildPrompt(promptText: string): boolean {
+  const lower = (promptText || '').toLowerCase();
+  return /(বানাও|তৈরি|ফিচার|যুক্ত|এ্যাড|অ্যাড|এডিট|ঠিক কর|ফিক্স|আপডেট|কোড|অ্যাপ|ওয়েবসাইট|ড্যাশবোর্ড|গেম|দেখো|চেক কর|সার্চ|build|create|add|feature|fix|update|implement|modify|edit|design|refactor|upgrade|debug|write|read|inspect|search|run|compile|deploy|clone|import)/i.test(lower);
+}
+
+function isCasualOrConversationalOnly(promptText: string): boolean {
+  const trimmed = (promptText || '').trim();
+  if (!trimmed) return false;
+  // Never treat as casual if it contains URLs, file paths, code fences, or build/inspect keywords
+  if (/https?:\/\/|```|[a-z0-9_-]+\.(tsx?|jsx?|html|css|json|py|md)\b|[/\\]/i.test(trimmed)) {
+    return false;
+  }
+  if (isActionOrBuildPrompt(trimmed)) {
+    return false;
+  }
+  const clean = trimmed.toLowerCase().replace(/[!?.।,~`'"]+/g, '').trim();
+  const greetingPattern = /^(hi+|hello+|hey+|helo+|yo+|hola|salam|assalamu\s*alaikum|nomoshkar|namaste|good\s*(morning|afternoon|evening|night)|thanks?|thank\s*you|thx|ok|okay|bye|goodbye|হাই|হ্যালো|হেলো|সালাম|আসসালামু\s*আলাইকুম|নমস্কার|কেমন\s*আছো|কেমন\s*আছেন|কি\s*খবর|কী\s*খবর|ভালো\s*আছো|ধন্যবাদ|শুভ\s*(সকাল|দুপুর|সন্ধ্যা|রাত্রি)|ঠিক\s*আছে|ওকে)$/i;
+  if (greetingPattern.test(clean)) return true;
+
+  // Short casual chat/intro questions (<= 6 words, no coding/workspace intent)
+  const wordCount = clean.split(/\s+/).filter(Boolean).length;
+  if (wordCount <= 6 && /^(who are you|what can you do|how are you|what is your name|তুমি কে|আপনি কে|কি করতে পারো|কী করতে পারো|তুমি কি পারো|পরিচয় দাও)/i.test(clean)) {
+    return true;
+  }
+  return false;
+}
+
+function looksLikeUnfinishedNarration(text: string): boolean {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return false;
+  return /(শুরু করব|যুক্ত করব|তৈরি করব|করছি|করব\.?$|প্রতিক্ষয়ে|আরেকটি টুল কল|I will now|Let me |Next,? I will|Starting tool)/i.test(trimmed.slice(-220));
+}
+
+function convertSchemaToJsonSchema(schema: any): any {
+  if (!schema || typeof schema !== 'object') return { type: 'object', properties: {} };
+  const mapType = (t: any): string => {
+    if (!t) return 'string';
+    const s = String(t).toUpperCase();
+    if (s === 'OBJECT' || t === Type.OBJECT) return 'object';
+    if (s === 'ARRAY' || t === Type.ARRAY) return 'array';
+    if (s === 'INTEGER' || t === Type.INTEGER) return 'integer';
+    if (s === 'NUMBER' || t === Type.NUMBER) return 'number';
+    if (s === 'BOOLEAN' || t === Type.BOOLEAN) return 'boolean';
+    return 'string';
+  };
+  const out: any = { type: mapType(schema.type) };
+  if (schema.description) out.description = schema.description;
+  if (Array.isArray(schema.enum)) out.enum = schema.enum;
+  if (schema.properties && typeof schema.properties === 'object') {
+    out.properties = {};
+    for (const [k, v] of Object.entries(schema.properties)) {
+      out.properties[k] = convertSchemaToJsonSchema(v);
+    }
+  } else if (out.type === 'object') {
+    out.properties = {};
+  }
+  if (schema.items) {
+    out.items = convertSchemaToJsonSchema(schema.items);
+  }
+  if (Array.isArray(schema.required) && schema.required.length > 0) {
+    out.required = schema.required;
+  }
+  return out;
+}
+
+function toOpenAITools(declarations: FunctionDeclaration[]): any[] {
+  return declarations
+    .filter((fn) => fn.name && OPENAI_CORE_TOOL_NAMES.has(fn.name))
+    .map((fn) => ({
+      type: 'function',
+      function: {
+        name: fn.name,
+        description: fn.description || '',
+        parameters: convertSchemaToJsonSchema(fn.parameters),
+      },
+    }));
+}
+
+// Convert messages to standard OpenAI format for OpenRouter, Groq, Cerebras, Mistral, Grok, Custom
+function convertToOpenAIMessages(
+  messages: any[],
+  mode: string,
+  systemOptions: SystemInstructionOptions = {},
+  enrichedLastMessage?: string
+): any[] {
+  const systemPrompt = getNexusSystemInstruction(mode, systemOptions);
+
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  const formatted: any[] = [{ role: 'system', content: systemPrompt }];
+  for (let i = 0; i < safeMessages.length; i++) {
+    const m = safeMessages[i];
+    const isLastUser = i === safeMessages.length - 1 && m.role !== 'model' && m.role !== 'assistant';
+    const text = isLastUser && enrichedLastMessage
+      ? enrichedLastMessage
+      : (m.parts?.[0]?.text || m.content || '');
+    if (text) {
+      formatted.push({
+        role: m.role === 'model' || m.role === 'assistant' ? 'assistant' : 'user',
+        content: text
+      });
+    }
+  }
+  return formatted;
+}
+
+const FILE_WRITE_TOOL_NAMES = new Set([
+  'write_to_file',
+  'fileWrite',
+  'replace_file_content',
+  'fileEdit',
+  'multi_replace_file_content',
+]);
+
+// --- Performance loops: plan-first / verify-then-fix / reviewer / briefs ---
+// Plan steps that satisfy the plan-first gate (any one before the first write).
+const PLAN_TOOLS = new Set(['omo_coordinate', 'ask_question', 'plan', 'read_skill']);
+// Short-brief discipline: tool results are truncated to this many chars
+// before entering model context (override with TOOL_RESULT_MAX_CHARS).
+const TOOL_RESULT_MAX_CHARS = Number(process.env.TOOL_RESULT_MAX_CHARS || 3000);
+// Max repair rounds shared by the verify-then-fix loop and the reviewer pass.
+const MAX_REPAIR_ROUNDS = 2;
+// FreeLLMAPI auto strategies to rotate through when the router errors.
+const FREELLMAPI_AUTO_STRATEGIES = ['auto:balanced', 'auto:fast', 'auto:reliable', 'auto:smart', 'auto:cheap'];
+
+function truncateToolOutput(value: unknown): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? null);
+  if (text.length <= TOOL_RESULT_MAX_CHARS) return text;
+  return text.slice(0, TOOL_RESULT_MAX_CHARS) +
+    `\n…[truncated: ${text.length - TOOL_RESULT_MAX_CHARS} more chars omitted — use grep_search / view_file on a narrow target instead of dumping whole files]`;
+}
+
+// Deterministic build verification: live-preview check of the built site.
+async function verifyBuiltSite(
+  targetUrl: string,
+  sendEvent: (data: any) => void,
+  execCtx: ToolExecutionContext
+): Promise<{ ok: boolean; brief: string }> {
+  try {
+    const result: any = await executeToolWithLiveEvents('verify_live_preview', { targetUrl, checkAssets: true }, sendEvent, execCtx);
+    if (result?.ok) {
+      return { ok: true, brief: `Preview OK (HTTP ${result.status}, ${result.htmlBytes} bytes, ${result.scriptsChecked} inline scripts, ${result.assetsCheckedCount} assets).` };
+    }
+    const problems: string[] = [];
+    if (result?.error) problems.push(`fetch error: ${result.error}`);
+    if (result && result.hasDocStructure === false) problems.push('missing HTML document structure (no <!doctype>/<html>/<body>)');
+    for (const e of result?.syntaxErrors || []) problems.push(`inline script #${e.scriptIndex} JS syntax error: ${e.error}`);
+    for (const b of result?.brokenAssets || []) problems.push(`broken asset: ${b.url} (HTTP ${b.status})`);
+    if (result?.status && result.status !== 200) problems.push(`preview HTTP ${result.status}`);
+    return { ok: false, brief: problems.length > 0 ? problems.join('\n- ') : 'Live preview verification failed for an unknown reason.' };
+  } catch (err: any) {
+    return { ok: false, brief: `verification crashed: ${err?.message || err}` };
+  }
+}
+
+// Compact brief for the reviewer pass: file list + head of the main page.
+async function buildReviewBrief(sessionId: string | undefined, rawUserPrompt: string): Promise<string> {
+  const dirName = sessionId
+    ? `projects/${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+    : 'projects';
+  try {
+    const dir = path.resolve(process.cwd(), dirName);
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    const lines: string[] = [
+      `User request: ${rawUserPrompt.slice(0, 500)}`,
+      `Built files in ${dirName}:`,
+    ];
+    for (const f of entries.filter(e => e.isFile()).slice(0, 12)) {
+      try {
+        const st = await fs.stat(path.join(dir, f.name));
+        lines.push(`- ${f.name} (${st.size} bytes)`);
+      } catch { /* ignore */ }
+    }
+    const html = await fs.readFile(path.join(dir, 'index.html'), 'utf-8').catch(() => '');
+    if (html) lines.push(`\nMain index.html (first 1500 chars):\n${html.slice(0, 1500)}`);
+    return lines.join('\n');
+  } catch {
+    return `User request: ${rawUserPrompt.slice(0, 500)}\n(Built files could not be listed.)`;
+  }
+}
+
+// Reviewer pass (OmO Reviewer): one short, tool-free call over the same
+// endpoint. Returns approved=true when the build is fine (or when the
+// reviewer itself is unreachable — never block delivery on reviewer errors).
+async function runReviewerPass(
+  endpoint: string,
+  apiKey: string,
+  model: string,
+  headers: Record<string, string>,
+  reviewBrief: string,
+  usageLedger?: TurnUsage
+): Promise<{ approved: boolean; findings: string }> {
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        ...headers,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: 'You are a senior code reviewer. Review the built website described below for completeness and quality. Reply with exactly "APPROVED" if it fully implements the request with no material issues. Otherwise reply with a short bullet list of concrete issues to fix (file + what is wrong). No praise, no filler.' },
+          { role: 'user', content: reviewBrief },
+        ],
+        max_tokens: 700,
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!res.ok) return { approved: true, findings: '' };
+    const json: any = await res.json().catch(() => null);
+    const text = String(json?.choices?.[0]?.message?.content || '').trim();
+    if (usageLedger && text) {
+      const ru = json?.usage;
+      addLlmStep(usageLedger, { kind: 'review', model, tier: costTierOfModel(model), promptTokens: ru?.prompt_tokens ?? estimateTokens(reviewBrief), completionTokens: ru?.completion_tokens ?? estimateTokens(text), estimated: !ru, note: 'reviewer pass' });
+    }
+    if (!text) return { approved: true, findings: '' };
+    if (/^approved\b/i.test(text)) return { approved: true, findings: '' };
+    return { approved: false, findings: text.slice(0, 2000) };
+  } catch {
+    return { approved: true, findings: '' };
+  }
+}
+
+// Stream chat with OpenAI-compatible endpoints (OpenRouter, Groq, Cerebras, Mistral, Grok, Custom) WITH full tool-calling + text-tool fallback loop
+async function streamOpenAICompatible(
+  endpoint: string,
+  apiKey: string,
+  model: string,
+  headers: Record<string, string>,
+  messages: any[],
+  mode: string,
+  sendEvent: (data: any) => void,
+  systemOptions: SystemInstructionOptions = {},
+  execCtx: ToolExecutionContext = {},
+  enrichedLastMessage?: string,
+  rawUserPrompt: string = '',
+  trackedKey?: KeyConfig,
+  allowTools: boolean = true,
+  planningEffort?: PlanningEffort,
+  usageLedger?: TurnUsage
+): Promise<string> {
+  const openAiMessages: any[] = convertToOpenAIMessages(messages, mode, systemOptions, enrichedLastMessage);
+  const openAiTools = allowTools ? toOpenAITools(serverTools) : [];
+  let targetModel = model;
+  let toolsEnabled = allowTools;
+  let committedText = '';
+  let didMutateFiles = false;
+  let calledAnyTool = false;
+  let continuationNudges = 0;
+  const requiresImplementation = isActionOrBuildPrompt(rawUserPrompt);
+
+  // Quality-ordered failover state: the turn's task class, the tier it
+  // started at, and whether a tier drop has already been surfaced.
+  const classified = classifyTask(rawUserPrompt);
+  const turnTask: TaskKind = classified === 'reasoning' ? 'planning' : classified;
+  const startModel = targetModel;
+  const startTier = tierOfModel(startModel, turnTask);
+  let degradationNoted = false;
+
+  // Tiered-routing guardrail state: the cheap loop model (Tier 1) is watched
+  // for bad tool choices. 3 consecutive tool failures, or the same tool+args
+  // 3 times, escalates the turn to Hydrogen (Tier 2) once.
+  let consecutiveToolFailures = 0;
+  const toolCallCounts = new Map<string, number>();
+  const mutatedFiles = new Set<string>();
+  let escalatedToHydrogen = false;
+
+  /** Compact handoff brief (~200-300 tokens): what was done, key files, tool
+   * counts, last result — never the full tool output. The new model reads
+   * only the files it needs. */
+  const buildHandoffBrief = (): string => {
+    const topCalls = [...toolCallCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4)
+      .map(([k, n]) => `${k.split(':')[0]} ×${n}`).join(', ') || 'none yet';
+    const files = [...mutatedFiles].slice(0, 10).join(', ') || 'none yet';
+    const lastTool = [...openAiMessages].reverse().find((m: any) => m.role === 'tool');
+    const lastResult = lastTool ? String(lastTool.content || '').slice(0, 300) : '';
+    return `[HANDOFF BRIEF — continue from here; do NOT re-read everything. Files written so far: ${files}. Tool calls this turn: ${topCalls}. Last tool result (truncated): ${lastResult || 'none'}]`;
+  };
+
+  /** Switch to another model mid-turn: record the failure, hand off context, and surface a tier drop honestly. */
+  const switchModel = (nextModel: string, reason: string) => {
+    const prev = targetModel;
+    targetModel = nextModel;
+    const brief = buildHandoffBrief();
+    openAiMessages.push({ role: 'system', content: handoffNote(prev, reason, nextModel) + (brief ? `\n\n${brief}` : '') });
+    const deg = degradationBetween(startModel, nextModel, turnTask);
+    if (deg.dropped && !degradationNoted) {
+      degradationNoted = true;
+      sendEvent({
+        type: 'action',
+        action: `⚠️ Top-tier models hit their limits — continuing with a lighter model (${nextModel}, tier ${deg.toTier}). The build continues; quality may be lower than the top tier.`,
+      });
+    } else {
+      sendEvent({ type: 'action', action: `⚡ Switching model to ${nextModel} (${reason})...` });
+    }
+  };
+
+  /** Watch one tool call for the escalation guardrail. Call after every tool
+   * execution in this loop. Escalates to Hydrogen once when the cheap loop
+   * model fails 3 tool calls in a row or repeats the same call 3 times. */
+  const noteToolCall = (toolName: string, args: any, toolResult: any): void => {
+    if (usageLedger) addToolCall(usageLedger, false);
+    const key = `${toolName}:${JSON.stringify(args || {})}`;
+    toolCallCounts.set(key, (toolCallCounts.get(key) || 0) + 1);
+    const failed = Boolean(toolResult?.error || toolResult?.success === false);
+    consecutiveToolFailures = failed ? consecutiveToolFailures + 1 : 0;
+    if (['write_to_file', 'fileWrite', 'replace_file_content', 'fileEdit', 'multi_replace_file_content'].includes(toolName)) {
+      const fp = toolResult?.cleanPath || args?.path || args?.filePath || args?.file || '';
+      if (fp) mutatedFiles.add(String(fp));
+    }
+    if (escalatedToHydrogen) return;
+    const isCheapLoop = cheapChain().includes(targetModel) || targetModel.startsWith('auto:');
+    if (!isCheapLoop) return;
+    const repeated = (toolCallCounts.get(key) || 0) >= 3;
+    if (consecutiveToolFailures >= 3 || repeated) {
+      escalatedToHydrogen = true;
+      const why = repeated
+        ? `the cheap loop model repeated the same tool call 3 times (${toolName})`
+        : `the cheap loop model failed ${consecutiveToolFailures} tool calls in a row`;
+      sendEvent({ type: 'action', action: `⬆️ Escalating to Hydrogen — ${why}. Hydrogen takes over the rest of this turn.` });
+      const hydrogen = codingChain()[0] || 'gemini-4-hydrogen';
+      switchModel(hydrogen, `escalated to Hydrogen: ${why}`);
+    }
+  };
+
+  // Performance-loop state (plan-first / verify-then-fix / reviewer)
+  // Multi-agent team: Planner -> Coder -> Reviewer -> Tester, sequential,
+  // 1 active at a time. Status events drive the TeamStatus UI panel.
+  const teamEnabled = allowTools && requiresImplementation;
+  let teamPlannerDone = false;
+  let teamTesterDone = false;
+  let lastFailureForLesson = '';
+  if (teamEnabled) {
+    sendEvent({ type: 'agent_status', agent: 'planner', status: 'working' });
+  }
+  let planCompleted = false;
+  let verificationDone = false;
+  let reviewed = false;
+  let repairRounds = 0;
+  let lastVerificationBrief = '';
+
+  const maxRounds = allowTools ? 16 : 1;
+  for (let round = 0; round < maxRounds; round++) {
+    await paceAndTrackKeyRound(trackedKey, round, sendEvent);
+    noteModelAttempt(targetModel, trackedKey?.id);
+    const buildPayload = (useModel: string, useTools: boolean) => {
+      const payload: any = {
+        model: useModel,
+        messages: openAiMessages,
+        stream: true,
+      };
+      // reasoning_effort is honoured by FreeLLMAPI (translated to the
+      // provider's thinking config). Only set for planning turns — execution
+      // uses the model default (high knee).
+      if (planningEffort) payload.reasoning_effort = planningEffort;
+      if (useTools) {
+        payload.tools = openAiTools;
+        payload.tool_choice = 'auto';
+      }
+      return JSON.stringify(payload);
+    };
+
+    let res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        ...headers
+      },
+      body: buildPayload(targetModel, toolsEnabled)
+    });
+
+    if (!res.ok) {
+      const errorJson = await res.json().catch(() => null);
+      const msg = errorJson?.error?.message || `API error ${res.status}: ${res.statusText}`;
+
+      const isToolsUnsupported =
+        toolsEnabled &&
+        (res.status === 400 || res.status === 422 || res.status === 404) &&
+        (msg.toLowerCase().includes('tool') ||
+          msg.toLowerCase().includes('function') ||
+          msg.toLowerCase().includes('support') ||
+          msg.toLowerCase().includes('schema'));
+
+      const slugMatch = msg.match(/use this slug instead:\s*([a-zA-Z0-9_\-\/:]+)/i);
+      const isModelUnavailable = msg.includes("unavailable for free") ||
+        msg.includes("not available") ||
+        msg.includes("No endpoints found") ||
+        msg.includes("not found") ||
+        msg.includes("not a valid model ID") ||
+        msg.includes("not a valid model");
+
+      if (isToolsUnsupported) {
+        toolsEnabled = false;
+        openAiMessages[0] = {
+          role: 'system',
+          content: openAiMessages[0].content + `\n\n[FALLBACK TOOL EXECUTION PROTOCOL]:
+Native function calling is unavailable on this model. Whenever you need to call a tool (e.g. view_file, write_to_file, replace_file_content, compile_applet, lint_applet, omo_coordinate, set_up_firebase), output ONLY:
+<tool_call>{"name":"TOOL_NAME","arguments":{...}}</tool_call>
+The server will execute it immediately and send back the result so you can continue.`
+        };
+        sendEvent({
+          type: "action",
+          action: `⚡ ${targetModel} switched to structured <tool_call> execution protocol...`
+        });
+        res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            ...headers
+          },
+          body: buildPayload(targetModel, false)
+        });
+      } else if (slugMatch && slugMatch[1] && slugMatch[1] !== targetModel) {
+        targetModel = slugMatch[1];
+        sendEvent({
+          type: "action",
+          action: `Switching to available model: ${targetModel}...`
+        });
+        res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            ...headers
+          },
+          body: buildPayload(targetModel, toolsEnabled)
+        });
+      } else if (
+        endpoint.includes('openrouter.ai') &&
+        !/free-models-per-day/i.test(msg) &&
+        (isModelUnavailable || /provider returned error/i.test(msg) || [502, 503].includes(res.status))
+      ) {
+        // Quality-ordered live chain (OpenRouter provider) — the old hardcoded
+        // list (qwen3-coder:free, llama-3.3-70b:free, …) is stale: those
+        // models are no longer free on OpenRouter (checked 26 Nov 2026).
+        recordModelFailure(targetModel, res.status, res.headers.get('retry-after'), msg);
+        const next = nextAfterFailure(targetModel, turnTask, 'openrouter');
+        if (next) {
+          switchModel(next.model, `OpenRouter provider error (${res.status})`);
+          res = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+              ...headers
+            },
+            body: buildPayload(targetModel, toolsEnabled)
+          });
+        }
+      } else if (
+        trackedKey?.provider === 'freellmapi' &&
+        (isModelUnavailable || /provider returned error/i.test(msg) || [429, 502, 503].includes(res.status))
+      ) {
+        // FreeLLMAPI failover: the router already retries other providers
+        // internally; if it still errors, walk the quality-ordered live
+        // chain first, then rotate the auto strategy as the floor.
+        recordModelFailure(targetModel, res.status, res.headers.get('retry-after'), msg);
+        const next = nextAfterFailure(targetModel, turnTask);
+        if (next) {
+          switchModel(next.model, `FreeLLMAPI error (${res.status})`);
+          res = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+              ...headers
+            },
+            body: buildPayload(targetModel, toolsEnabled)
+          });
+        } else {
+          const strategies = FREELLMAPI_AUTO_STRATEGIES.filter(m => m !== targetModel);
+          if (strategies.length > 0) {
+            switchModel(strategies[round % strategies.length], 'FreeLLMAPI error — rotating auto strategy');
+            res = await fetch(endpoint, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+                ...headers
+              },
+              body: buildPayload(targetModel, toolsEnabled)
+            });
+          }
+        }
+      }
+
+      if (!res.ok) {
+        const secondError = await res.json().catch(() => null);
+        const finalMsg = secondError?.error?.message || msg;
+        const err = new Error(finalMsg);
+        (err as any).status = res.status;
+        throw err;
+      }
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("No response stream available");
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let roundText = '';
+    let streamError: { message: string; status: number } | null = null;
+    const toolCallsMap = new Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(':')) continue;
+        if (trimmed === 'data: [DONE]') continue;
+        if (trimmed.startsWith('data: ')) {
+          let json: any = null;
+          try {
+            json = JSON.parse(trimmed.slice(6));
+          } catch {
+            continue;
+          }
+
+          if (json?.error) {
+            streamError = {
+              message: json.error.message || json.error?.metadata?.raw || 'Provider returned error',
+              status: Number(json.error.code || 502),
+            };
+            break;
+          }
+
+          const choiceDelta = json.choices?.[0]?.delta;
+          if (!choiceDelta) continue;
+
+          if (typeof choiceDelta.content === 'string' && choiceDelta.content.length > 0) {
+            roundText += choiceDelta.content;
+            const previewText = (committedText ? committedText + '\n\n' : '') + getSafeStreamableText(roundText);
+            if (previewText.trim()) {
+              sendEvent({ type: 'text', text: previewText });
+            }
+          }
+
+          if (Array.isArray(choiceDelta.tool_calls)) {
+            for (const tc of choiceDelta.tool_calls) {
+              const idx = typeof tc.index === 'number' ? tc.index : 0;
+              const existing = toolCallsMap.get(idx) || {
+                id: tc.id || `call_${round}_${idx}_${Date.now()}`,
+                type: 'function' as const,
+                function: { name: '', arguments: '' },
+              };
+              if (tc.id) existing.id = tc.id;
+              if (tc.function?.name) existing.function.name += tc.function.name;
+              if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
+              toolCallsMap.set(idx, existing);
+            }
+          }
+        }
+      }
+      if (streamError) break;
+    }
+
+    if (streamError) {
+      const isAccountDailyCap = /free-models-per-day/i.test(streamError.message);
+      const isOpenRouterProviderError =
+        endpoint.includes('openrouter.ai') &&
+        !isAccountDailyCap &&
+        !committedText &&
+        !calledAnyTool &&
+        (/provider returned error/i.test(streamError.message) || [404, 502, 503].includes(streamError.status));
+
+      if (isOpenRouterProviderError) {
+        // Quality-ordered live chain (OpenRouter provider) — never the stale
+        // hardcoded list (qwen3-coder:free / llama-3.3-70b:free are no longer
+        // free on OpenRouter, checked 26 Nov 2026).
+        recordModelFailure(targetModel, streamError.status, null, streamError.message);
+        const next = nextAfterFailure(targetModel, turnTask, 'openrouter');
+        if (round < 4 && next) {
+          switchModel(next.model, `OpenRouter provider error (${streamError.status})`);
+          continue;
+        }
+      }
+
+      const isFreeLLMAPIStreamError =
+        trackedKey?.provider === 'freellmapi' &&
+        !committedText &&
+        !calledAnyTool &&
+        (/provider returned error/i.test(streamError.message) || [404, 429, 502, 503].includes(streamError.status));
+      if (isFreeLLMAPIStreamError) {
+        recordModelFailure(targetModel, streamError.status, null, streamError.message);
+        const next = nextAfterFailure(targetModel, turnTask);
+        if (round < 4 && next) {
+          switchModel(next.model, `FreeLLMAPI stream error (${streamError.status})`);
+          continue;
+        }
+        const strategies = FREELLMAPI_AUTO_STRATEGIES.filter(m => m !== targetModel);
+        if (round < 4 && strategies.length > 0) {
+          switchModel(strategies[round % strategies.length], 'FreeLLMAPI stream error — rotating auto strategy');
+          continue;
+        }
+      }
+
+      const err = new Error(streamError.message);
+      (err as any).status = streamError.status;
+      throw err;
+    }
+
+    const nativeCalls = Array.from(toolCallsMap.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([, call]) => call)
+      .filter((c) => Boolean(c.function.name));
+
+    // Also detect and strip text-embedded tool calls (e.g. ```json {"tool_calls": [...]} ``` or <tool_call>...</tool_call>)
+    const { calls: textParsedCalls, cleanedText: cleanRoundText } = extractAndStripTextToolCalls(roundText);
+
+    if (cleanRoundText) {
+      committedText = committedText ? `${committedText}\n\n${cleanRoundText}` : cleanRoundText;
+    }
+    sendEvent({ type: 'text', text: committedText });
+
+    if (nativeCalls.length > 0) {
+      calledAnyTool = true;
+      openAiMessages.push({
+        role: 'assistant',
+        content: roundText || null,
+        tool_calls: nativeCalls,
+      });
+
+      for (const tc of nativeCalls) {
+        let parsedArgs: any = {};
+        try {
+          parsedArgs = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+        } catch {
+          parsedArgs = {};
+        }
+        const toolName = tc.function.name;
+        if (PLAN_TOOLS.has(toolName)) planCompleted = true;
+        // PLAN-FIRST guard: refuse the first code write until a plan step ran.
+        if (requiresImplementation && !planCompleted && FILE_WRITE_TOOL_NAMES.has(toolName)) {
+          openAiMessages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: JSON.stringify({ error: 'PLAN-FIRST: no plan step has run yet. Before writing any code, call omo_coordinate with the task (Architect → Executor → Reviewer) and read_skill for each relevant skill. Only call ask_question if the request is genuinely ambiguous — otherwise plan with sensible defaults and proceed.' }),
+          });
+          sendEvent({ type: 'action', action: '⛔ Plan-first: write blocked until omo_coordinate / read_skill runs.' });
+          continue;
+        }
+        if (FILE_WRITE_TOOL_NAMES.has(toolName)) {
+          didMutateFiles = true;
+          verificationDone = false;
+          reviewed = false;
+        }
+        const toolResult = await executeToolWithLiveEvents(toolName, parsedArgs, sendEvent, execCtx);
+        noteToolCall(toolName, parsedArgs, toolResult);
+        openAiMessages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: truncateToolOutput(toolResult),
+        });
+      }
+      continue;
+    }
+
+    if (textParsedCalls.length > 0) {
+      calledAnyTool = true;
+      openAiMessages.push({
+        role: 'assistant',
+        content: roundText,
+      });
+      const resultSummaries: any[] = [];
+      for (const tc of textParsedCalls) {
+        if (PLAN_TOOLS.has(tc.name)) planCompleted = true;
+        if (requiresImplementation && !planCompleted && FILE_WRITE_TOOL_NAMES.has(tc.name)) {
+          resultSummaries.push({ tool: tc.name, result: { error: 'PLAN-FIRST: call omo_coordinate (and read_skill for relevant skills) before writing any code.' } });
+          continue;
+        }
+        if (FILE_WRITE_TOOL_NAMES.has(tc.name)) {
+          didMutateFiles = true;
+          verificationDone = false;
+          reviewed = false;
+        }
+        const toolResult = await executeToolWithLiveEvents(tc.name, tc.args, sendEvent, execCtx);
+        noteToolCall(tc.name, tc.args, toolResult);
+        resultSummaries.push({ tool: tc.name, result: truncateToolOutput(toolResult) });
+      }
+      openAiMessages.push({
+        role: 'user',
+        content: `[TOOL EXECUTION RESULTS]:\n${JSON.stringify(resultSummaries)}\n\nContinue immediately: implement all requested features directly in workspace files using write_to_file or replace_file_content (never output tool_calls JSON or full code in chat), then verify and summarize.`,
+      });
+      continue;
+    }
+
+    // Usage ledger: one step per model round (estimates — the streaming
+    // path does not return provider usage; labelled as estimates in the UI).
+    if (roundText && usageLedger) {
+      addLlmStep(usageLedger, { kind: 'llm', model: targetModel, provider: trackedKey?.provider, keyName: trackedKey?.name, tier: costTierOfModel(targetModel), promptTokens: estimateTokens(JSON.stringify(openAiMessages).slice(-20000)), completionTokens: estimateTokens(roundText), estimated: true });
+    }
+    // Multi-agent team status (sequential: Planner -> Coder -> Reviewer ->
+    // Tester). Planner works until the plan-first gate passes, then Coder.
+    if (teamEnabled && planCompleted && !teamPlannerDone) {
+      teamPlannerDone = true;
+      sendEvent({ type: 'agent_status', agent: 'planner', status: 'done' });
+      sendEvent({ type: 'agent_status', agent: 'coder', status: 'working' });
+    }
+
+    // Auto-continuation guard: if model stopped after only planning/setup or narrated next tool calls without writing files yet
+    const shouldNudge =
+      continuationNudges < 2 &&
+      ((requiresImplementation && !didMutateFiles && (calledAnyTool || looksLikeUnfinishedNarration(roundText))) ||
+        looksLikeUnfinishedNarration(roundText));
+
+    if (shouldNudge) {
+      continuationNudges++;
+      openAiMessages.push({
+        role: 'assistant',
+        content: roundText || 'Proceeding with next step.',
+      });
+      openAiMessages.push({
+        role: 'user',
+        content: toolsEnabled
+          ? `Do NOT stop or narrate what tool you will call next. Immediately execute the real tool calls now (inspect target file with view_file if needed, write/update features directly in files using write_to_file or replace_file_content, and verify with compile_applet / lint_applet). Never write code or tool_calls JSON in chat.`
+          : `Do NOT stop or narrate. Call the next tool immediately using <tool_call>{"name":"TOOL_NAME","arguments":{...}}</tool_call> to inspect/write the actual workspace files and add all requested features.`,
+      });
+      continue;
+    }
+
+    // VERIFY-THEN-FIX + REVIEWER PASS (deterministic, server-side):
+    // never present a broken build as done. Verification runs first, then
+    // one reviewer pass; findings go back to the model for repair
+    // (max MAX_REPAIR_ROUNDS repair rounds in total).
+    if (didMutateFiles && repairRounds < MAX_REPAIR_ROUNDS) {
+      const previewTarget = systemOptions.sessionId
+        ? `/projects/${systemOptions.sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}/index.html`
+        : '/projects/index.html';
+      if (!verificationDone) {
+        if (teamEnabled) sendEvent({ type: 'agent_status', agent: 'tester', status: 'working' });
+        const verification = await verifyBuiltSite(previewTarget, sendEvent, execCtx);
+        if (teamEnabled) sendEvent({ type: 'agent_status', agent: 'tester', status: verification.ok ? 'done' : 'failed' });
+        if (!verification.ok) {
+          lastVerificationBrief = verification.brief;
+          lastFailureForLesson = verification.brief;
+          repairRounds++;
+          openAiMessages.push({ role: 'assistant', content: roundText || 'Verifying build.' });
+          openAiMessages.push({ role: 'user', content: `[BUILD VERIFICATION FAILED — repair round ${repairRounds}/${MAX_REPAIR_ROUNDS}]:\n- ${verification.brief}\nFix every issue above in the workspace files with the file tools, then stop. Do not narrate the fix, just do it.` });
+          sendEvent({ type: 'action', action: `🔧 Verification failed — repair round ${repairRounds}...` });
+          continue;
+        }
+        verificationDone = true;
+        if (teamEnabled && !teamTesterDone) {
+          teamTesterDone = true;
+          sendEvent({ type: 'agent_status', agent: 'tester', status: 'done' });
+        }
+        // Learning from mistakes: a repair round fixed a real failure — record it.
+        if (lastFailureForLesson && repairRounds > 0) {
+          recordLesson(lastFailureForLesson, 'Fixed in a verify-then-fix repair round — the repaired files now pass the live-preview check.', rawUserPrompt).catch(() => {});
+          lastFailureForLesson = '';
+        }
+      }
+      if (!reviewed) {
+        reviewed = true;
+        if (teamEnabled) sendEvent({ type: 'agent_status', agent: 'reviewer', status: 'working' });
+        const brief = await buildReviewBrief(systemOptions.sessionId, rawUserPrompt);
+        const review = await runReviewerPass(endpoint, apiKey, targetModel, headers, brief, usageLedger);
+        if (teamEnabled) sendEvent({ type: 'agent_status', agent: 'reviewer', status: review.approved ? 'done' : 'failed' });
+        if (!review.approved) {
+          lastFailureForLesson = `Reviewer: ${review.findings.slice(0, 300)}`;
+          repairRounds++;
+          openAiMessages.push({ role: 'assistant', content: roundText || 'Reviewing build.' });
+          openAiMessages.push({ role: 'user', content: `[REVIEWER PASS — repair round ${repairRounds}/${MAX_REPAIR_ROUNDS}]:\n${review.findings}\nFix every issue above in the workspace files with the file tools, then stop.` });
+          sendEvent({ type: 'action', action: `🔍 Reviewer found issues — repair round ${repairRounds}...` });
+          continue;
+        }
+      }
+    }
+
+    break;
+  }
+
+  // Final check when rounds ran out before the hook above could run.
+  if (didMutateFiles && !verificationDone) {
+    const previewTarget = systemOptions.sessionId
+      ? `/projects/${systemOptions.sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}/index.html`
+      : '/projects/index.html';
+    const verification = await verifyBuiltSite(previewTarget, sendEvent, execCtx);
+    if (verification.ok) {
+      verificationDone = true;
+    } else {
+      lastVerificationBrief = verification.brief;
+    }
+  }
+  if (didMutateFiles && !verificationDone && lastVerificationBrief) {
+    committedText += `\n\n[⚠️ Note: live preview verification still failing after ${MAX_REPAIR_ROUNDS} repair rounds — ${lastVerificationBrief}]`;
+  }
+
+  // FIX (2026-11-27): an empty model reply used to be returned as success,
+  // and the outer key loop then sent `done` with an empty fullText — the
+  // user saw an empty reply with no error. An empty reply is a failure:
+  // throw so the outer loop rotates to the next key/model and, when the
+  // whole chain is exhausted, the friendly `!succeeded` error is sent.
+  if (!committedText.trim()) {
+    throw new Error('The model returned an empty response (no text produced).');
+  }
+  recordModelSuccess(targetModel);
+  return committedText;
+}
+
+async function runGeminiAgentLoop(
+  client: GoogleGenAI,
+  targetModel: string,
+  mode: string,
+  systemOptions: SystemInstructionOptions,
+  history: any[],
+  lastMessage: string,
+  rawUserPrompt: string,
+  sendEvent: (data: any) => void,
+  execCtx: ToolExecutionContext,
+  trackedKey?: KeyConfig,
+  allowTools: boolean = true,
+  usageLedger?: TurnUsage
+): Promise<string> {
+  const chat = client.chats.create({
+    model: targetModel,
+    config: {
+      systemInstruction: getNexusSystemInstruction(mode, systemOptions),
+      ...(allowTools ? { tools: [{ functionDeclarations: serverTools }] } : {}),
+    },
+    history
+  });
+
+  let nextPayload: any = lastMessage;
+  let committedText = '';
+  let didMutateFiles = false;
+  let calledAnyTool = false;
+  let continuationNudges = 0;
+  const requiresImplementation = isActionOrBuildPrompt(rawUserPrompt);
+  const maxRounds = allowTools ? 16 : 1;
+
+  for (let round = 0; round < maxRounds; round++) {
+    await paceAndTrackKeyRound(trackedKey, round, sendEvent);
+    const currentResult = await chat.sendMessageStream({ message: nextPayload });
+    let roundText = '';
+    const functionCalls: any[] = [];
+
+    for await (const chunk of currentResult) {
+      if (chunk.text) {
+        roundText += chunk.text;
+        const previewText = (committedText ? committedText + '\n\n' : '') + getSafeStreamableText(roundText);
+        if (previewText.trim()) {
+          sendEvent({ type: 'text', text: previewText });
+        }
+      }
+      if (chunk.functionCalls && chunk.functionCalls.length > 0) {
+        functionCalls.push(...chunk.functionCalls);
+      }
+    }
+
+    const { calls: textParsedCalls, cleanedText: cleanRoundText } = extractAndStripTextToolCalls(roundText);
+    if (cleanRoundText) {
+      committedText = committedText ? `${committedText}\n\n${cleanRoundText}` : cleanRoundText;
+    }
+    sendEvent({ type: 'text', text: committedText });
+
+    if (functionCalls.length > 0) {
+      calledAnyTool = true;
+      const toolResponses = await Promise.all(
+        functionCalls.map(async (call) => {
+          if (!call.name) return null;
+          if (FILE_WRITE_TOOL_NAMES.has(call.name)) didMutateFiles = true;
+          const toolResult = await executeToolWithLiveEvents(call.name, call.args, sendEvent, execCtx);
+          return {
+            functionResponse: {
+              name: call.name,
+              response: { output: toolResult }
+            }
+          };
+        })
+      );
+      const validResponses = toolResponses.filter(Boolean);
+      if (validResponses.length === 0) break;
+      nextPayload = validResponses;
+      continue;
+    }
+
+    if (textParsedCalls.length > 0) {
+      calledAnyTool = true;
+      const results: any[] = [];
+      for (const tc of textParsedCalls) {
+        if (FILE_WRITE_TOOL_NAMES.has(tc.name)) didMutateFiles = true;
+        const toolResult = await executeToolWithLiveEvents(tc.name, tc.args, sendEvent, execCtx);
+        results.push({ tool: tc.name, result: toolResult });
+      }
+      nextPayload = `[TOOL EXECUTION RESULTS]:\n${JSON.stringify(results)}\n\nContinue immediately using real function calls (write_to_file / replace_file_content) to write all requested code into workspace files. Do NOT output tool_calls JSON in chat.`;
+      continue;
+    }
+
+    const shouldNudge =
+      continuationNudges < 2 &&
+      ((requiresImplementation && !didMutateFiles && (calledAnyTool || looksLikeUnfinishedNarration(roundText))) ||
+        looksLikeUnfinishedNarration(roundText));
+
+    if (shouldNudge) {
+      continuationNudges++;
+      nextPayload = `Do NOT stop or narrate next steps. Call write_to_file or replace_file_content NOW to write/update the actual files with all requested features, then verify with compile_applet and lint_applet. Never write code or tool_calls JSON in chat.`;
+      continue;
+    }
+
+    break;
+  }
+
+  // Usage ledger (aggregate for the direct-Gemini loop — estimates).
+  if (usageLedger && committedText) {
+    addLlmStep(usageLedger, { kind: 'llm', model: targetModel, tier: costTierOfModel(targetModel), promptTokens: estimateTokens(JSON.stringify(history).slice(-20000) + lastMessage), completionTokens: estimateTokens(committedText), estimated: true, note: 'direct Gemini loop (aggregate)' });
+  }
+  // FIX (2026-11-27): see the same guard in streamOpenAICompatible — an
+  // empty reply is a failure, not a success. Throw so the outer loop
+  // rotates to the next key/model instead of sending an empty `done`.
+  if (!committedText.trim()) {
+    throw new Error('The model returned an empty response (no text produced).');
+  }
+  recordModelSuccess(targetModel);
+  return committedText;
+}
+
+// Orchestrated Chat Execution with Multi-Key Failover and Smart Rotation
+// --- Tier 0 direct-command handlers (zero model calls) ---------------------
+async function runLocalDirectCommand(tool: string, sessionId?: string): Promise<string> {
+  switch (tool) {
+    case 'list_projects': {
+      const ps = await listProjects();
+      if (!ps.length) return 'No projects yet. Build a site first — it will appear here.';
+      return 'Your projects:\n' + ps.map((p) => `- ${p.title} (${p.files} files, ${Math.round(p.sizeBytes / 1024)} KB) — ${p.url}`).join('\n');
+    }
+    case 'list_chats': {
+      const cs = await listChats();
+      if (!cs.length) return 'No past chats yet.';
+      return 'Past chats:\n' + cs.map((c) => `- ${c.title} (${c.messageCount} messages${c.hasProject ? ', has project' : ''})`).join('\n');
+    }
+    case 'show_memory':
+      return readUserMemory();
+    case 'show_usage': {
+      const s = sessionUsageSummary(sessionId || 'default');
+      if (!s) return 'No usage recorded yet this session.';
+      return `Usage this session (${s.turns} turns): ${s.requests} requests, ${s.totalTokens} tokens, ${s.toolCalls} tool calls (${s.toolCacheHits} served from cache), ${s.directTurns} direct (zero-cost) turns.`;
+    }
+    case 'list_skills':
+      return `Skills (${CODING_SKILLS_REGISTRY.length}):\n` + CODING_SKILLS_REGISTRY.map((sk) => `- ${sk.name}: ${sk.description}`).join('\n');
+    default:
+      return `Unknown direct command: ${tool}`;
+  }
+}
+
+function formatDirectResult(tool: string, result: any): string {
+  if (typeof result === 'string') return result.slice(0, 8000);
+  if (result && typeof result.content === 'string') return result.content.slice(0, 8000);
+  if (result && typeof result.message === 'string' && result.error) return result.message.slice(0, 2000);
+  const text = JSON.stringify(result, null, 2) || '';
+  return text.slice(0, 8000);
+}
+
+export async function handleOrchestratedChat(
+  req: { 
+    messages: any[]; 
+    mode?: string; 
+    userKeys?: KeyConfig[]; 
+    keys?: KeyConfig[];
+    preferredProvider?: string; 
+    safePacing?: boolean;
+    sessionId?: string;
+    selectedModel?: string;
+    developerPersona?: string;
+    customSystemInstruction?: string;
+    outputFormat?: 'auto' | 'markdown' | 'json';
+    multiAgent?: boolean;
+    preferOnlyCustomKeys?: boolean;
+    stickyKeyId?: string | null;
+    imageBase64?: string;
+    imageMime?: string;
+  },
+  res: Response
+) {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  const sendEvent = (data: any) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  const {
+    messages: rawMessages,
+    mode = "general",
+    userKeys: reqUserKeys,
+    keys: reqKeys,
+    preferredProvider = 'all',
+    sessionId,
+    selectedModel,
+    developerPersona,
+    customSystemInstruction,
+    outputFormat = 'auto',
+    multiAgent = true,
+    preferOnlyCustomKeys = false,
+    stickyKeyId: reqStickyKeyId = null,
+    imageBase64,
+    imageMime
+  } = req;
+  const messages = Array.isArray(rawMessages) ? rawMessages : [];
+  if (messages.length === 0) {
+    sendEvent({
+      type: "error",
+      error: "অনুগ্রহ করে একটি বৈধ প্রম্পট বা মেসেজ পাঠান (messages array is empty or missing)।"
+    });
+    res.end();
+    return;
+  }
+  // Per-turn usage ledger (token/request transparency) + the final assistant
+  // text (saved to server chat history before res.end()).
+  const usageLedger = newTurnUsage(sessionId || 'default');
+  let finalAssistantText = '';
+  const userKeys = reqUserKeys || reqKeys || [];
+  const systemOptions: SystemInstructionOptions = {
+    developerPersona,
+    customSystemInstruction,
+    outputFormat,
+    multiAgent,
+    sessionId,
+  };
+  const explicitGeminiModel = selectedModel && selectedModel !== 'Default' && selectedModel !== 'auto'
+    ? normalizeModelName('gemini', selectedModel)
+    : null;
+
+  const sessionPreviewTarget = sessionId
+    ? `projects/${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}/index.html`
+    : 'projects/index.html';
+  
+  // Merge server-stored chat history (memory): if the client sent only the
+  // new message, prepend the stored conversation so the agent continues where
+  // it stopped. The stored shape ({role, text}) is accepted by the sanitizer.
+  let messagesForHistory = messages;
+  if (messages.length <= 1 && sessionId) {
+    try {
+      const stored = await loadChat(sessionId);
+      if (stored && stored.messages.length > 0) {
+        messagesForHistory = [...stored.messages.map((m) => ({ role: m.role, parts: [{ text: m.text }] })), ...messages];
+      }
+    } catch { /* stored history unavailable — continue with client history */ }
+  }
+
+  // Extract and sanitize messages once
+  const { history, lastMessage: initialLastMessage } = prepareGeminiHistoryAndLastMessage(messagesForHistory);
+  let lastMessage = initialLastMessage;
+
+  // Vision: an uploaded image is described first (free Gemini, planning
+  // chain); the design brief is injected into the prompt and the agent
+  // builds a site matching it.
+  if (imageBase64) {
+    try {
+      sendEvent({ type: 'action', action: '🖼️ Image received — describing the design...' });
+      const { brief, model } = await describeImage(imageBase64, imageMime || 'image/jpeg');
+      lastMessage += `\n\n[IMAGE DESIGN BRIEF — the user uploaded a design image. Build a site matching this design:\n${brief}]`;
+      addLlmStep(usageLedger, { kind: 'vision', model, tier: costTierOfModel(model), promptTokens: 1000, completionTokens: estimateTokens(brief), estimated: true, note: 'vision description (image tokens estimated)' });
+    } catch (err: any) {
+      sendEvent({ type: 'action', action: `⚠️ Could not describe the uploaded image (${String(err?.message || err).slice(0, 120)}). Building from your text instead.` });
+    }
+  }
+
+  // --- Tier 0: rule-based direct commands (zero model calls) ---------------
+  // Deterministic commands (show file / list files / git status / search)
+  // run as code and go straight to the UI — the model is never involved.
+  const direct = matchDirectCommand(initialLastMessage, sessionId);
+  if (direct) {
+    try {
+      let resultText = '';
+      let servedFromCache = false;
+      if (direct.kind === 'local') {
+        resultText = await runLocalDirectCommand(direct.tool, sessionId);
+      } else {
+        const cached = await getCachedToolResult(direct.tool, direct.args);
+        if (cached.hit) {
+          servedFromCache = true;
+          resultText = formatDirectResult(direct.tool, cached.result);
+        } else {
+          const result = await executeServerTool(direct.tool, direct.args, (a) => sendEvent({ type: 'action', action: a }), { sessionId });
+          await setCachedToolResult(direct.tool, direct.args, result);
+          resultText = formatDirectResult(direct.tool, result);
+        }
+      }
+      usageLedger.directServed = true;
+      addToolCall(usageLedger, servedFromCache);
+      sendEvent({ type: 'action', action: direct.label + (servedFromCache ? ' (cached)' : '') });
+      sendEvent({ type: 'text', text: resultText });
+      finalAssistantText = resultText;
+      sendEvent({ type: 'done', fullText: resultText, direct: true, apiCalls: 0, model: null });
+    } catch (err: any) {
+      sendEvent({ type: 'error', error: `Direct command failed: ${String(err?.message || err).slice(0, 200)}` });
+    }
+    await saveChatTurn(sessionId || 'default', initialLastMessage, finalAssistantText || '(direct command)').catch(() => {});
+    const totals = usageTotals(usageLedger);
+    recordTurnUsage(sessionId || 'default', totals);
+    sendEvent({ type: 'usage_summary', usage: totals });
+    res.end();
+    return;
+  }
+
+  // Memory + lessons: read at session start (the model is stateless — this
+  // is the agent's memory). Injected into the system prompt.
+  try {
+    systemOptions.memory = await readUserMemory();
+    systemOptions.lessons = await readLessons();
+  } catch { /* memory/lessons unavailable — continue without them */ }
+
+  // Intent gate: tools/code ONLY when the message actually needs them.
+  // Local check first, then the cheap gate. Casual messages get ONE direct
+  // fast-model answer — no tools, no code, no agent loop.
+  let isConversationalPrompt = isCasualOrConversationalOnly(initialLastMessage);
+  if (!isConversationalPrompt) {
+    const intent = await decideIntent(initialLastMessage, history);
+    isConversationalPrompt = intent === 'casual';
+  }
+  if (isConversationalPrompt) {
+    try {
+      const mem = (systemOptions.memory || '').slice(0, 1500);
+      const { text, model, usage } = await chatOnce({
+        system: CASUAL_SYSTEM + (mem ? `\n\nUSER MEMORY (durable facts):\n${mem}` : ''),
+        user: initialLastMessage,
+        chain: chatChain(),
+        maxTokens: 800,
+        timeoutMs: 60000,
+      });
+      // FIX (2026-11-27): an empty direct answer used to be sent as `done`
+      // with an empty fullText — the user saw an empty reply with no error.
+      // Treat it as a failure: send the plain-words error and end.
+      if (!text.trim()) {
+        sendEvent({ type: 'error', error: '⚠️ কোনো মডেল সাড়া দেয়নি (খালি উত্তর)। Keys ট্যাবে Gemini / Groq / OpenRouter কী-র স্থিতি চেক করুন, অথবা env vars সেট করুন (GEMINI_API_KEYS / GROQ_API_KEYS / OPENROUTER_API_KEYS)।' });
+        res.end();
+        return;
+      }
+      addLlmStep(usageLedger, { kind: 'llm', model, tier: costTierOfModel(model), promptTokens: usage?.prompt_tokens ?? estimateTokens(initialLastMessage), completionTokens: usage?.completion_tokens ?? estimateTokens(text), estimated: !usage });
+      sendEvent({ type: 'text', text });
+      finalAssistantText = text;
+      sendEvent({ type: 'done', fullText: text, model, direct: false, apiCalls: 1 });
+      await saveChatTurn(sessionId || 'default', initialLastMessage, text).catch(() => {});
+      const totals = usageTotals(usageLedger);
+      recordTurnUsage(sessionId || 'default', totals);
+      sendEvent({ type: 'usage_summary', usage: totals });
+      res.end();
+      return;
+    } catch {
+      // Direct answer failed — fall through to the agent loop with tools off.
+    }
+  }
+  const allowTools = !isConversationalPrompt;
+  systemOptions.conversational = isConversationalPrompt;
+
+  // Skill trigger matching (deterministic, from the registry `triggers` field):
+  // if the user's request matches any of the registered skills, preload
+  // their full instructions into the system prompt so the model follows them
+  // without having to call read_skill first. read_skill stays available for
+  // fetching any skill by name at any time.
+  if (!isConversationalPrompt) {
+    const matchedSkills = matchSkillsForPrompt(initialLastMessage, 3);
+    if (matchedSkills.length > 0) {
+      systemOptions.matchedSkills = matchedSkills
+        .map(s => `### ${s.name}\n${s.instructions}`)
+        .join('\n\n');
+      sendEvent({
+        type: "action",
+        action: `📚 Skills loaded: ${matchedSkills.map(s => s.name).join(', ')}`
+      });
+    }
+  }
+
+  // Inject active workspace & session preview context ONLY for non-casual prompts (saves tokens and prevents tools on "Hi")
+  if (!isConversationalPrompt) {
+    try {
+      const contextNotes: string[] = [];
+      for (const candidate of Array.from(new Set([sessionPreviewTarget, 'projects/index.html']))) {
+        const absCandidate = path.resolve(process.cwd(), candidate);
+        try {
+          const stat = await fs.stat(absCandidate);
+          if (stat.isFile() && stat.size > 40) {
+            const previewHead = await fs.readFile(absCandidate, 'utf-8').then(c => c.slice(0, 600)).catch(() => '');
+            const titleMatch = previewHead.match(/<title>([^<]+)<\/title>/i);
+            contextNotes.push(`- ${candidate} exists (${stat.size} bytes${titleMatch ? `, title: "${titleMatch[1].trim()}"` : ''})`);
+          }
+        } catch {}
+      }
+      if (contextNotes.length > 0) {
+        lastMessage += `\n\n[ACTIVE SESSION WORKSPACE CONTEXT]:
+Existing live preview file(s):
+${contextNotes.join('\n')}
+When modifying or adding features to the current session app, FIRST inspect the existing file with view_file, then update it directly using write_to_file or replace_file_content.`;
+      }
+    } catch {}
+  }
+
+  // Auto-detect reference website URLs and scrape their structure, layout & copy
+  const urlRegex = /(https?:\/\/[^\s<>'"]+)/gi;
+  const foundUrls = initialLastMessage.match(urlRegex);
+  if (foundUrls && foundUrls.length > 0) {
+    const rawTargetUrl = foundUrls[0].replace(/[),.]+$/, '');
+    sendEvent({
+      type: "action",
+      action: `🔍 Analyzing reference website: ${rawTargetUrl}...`
+    });
+
+    try {
+      // 1. Try Jina Reader for clean, high-fidelity markdown layout extraction
+      const jinaRes = await fetch(`https://r.jina.ai/${rawTargetUrl}`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Accept': 'text/plain,text/markdown,*/*',
+        },
+        signal: AbortSignal.timeout(9000),
+      });
+
+      if (jinaRes.ok) {
+        const pageMarkdown = await jinaRes.text();
+        if (pageMarkdown && pageMarkdown.length > 80) {
+          sendEvent({
+            type: "action",
+            action: `✓ Scraped reference structure from ${rawTargetUrl}! Synthesizing matching design...`
+          });
+          lastMessage += `\n\n[REFERENCE WEBSITE CONTENT - SCRAPED FROM ${rawTargetUrl}]:
+---
+${pageMarkdown.slice(0, 14000)}
+---
+BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
+1. The user wants a website LIKE ${rawTargetUrl} — similar layout, sections and style, with FRESH, original content written by you.
+2. Observe its real navbar links, brand title/logo, hero tagline, buttons, content sections, pricing/feature cards, and footer — then build the same KINDS of sections with your own words and design.
+3. NEVER copy its copyrighted text, images, logos or branding. NEVER claim to copy its private source code — only the public rendered page is visible.
+4. Make all elements interactive (nav buttons, tabs, modal dialogs, search filters).
+5. Write the complete production HTML/CSS/JS directly to ${sessionPreviewTarget} using write_to_file (NEVER dump code into chat).`;
+        }
+      }
+    } catch (scrapeErr) {
+      console.warn("Auto-scrape failed:", scrapeErr);
+      lastMessage += `\n\n[SYSTEM DIRECTIVE: The user linked reference website ${rawTargetUrl}. Call webFetch with this URL or webSearch to inspect its actual features and layout before writing code.]`;
+    }
+  }
+
+  // Merge user keys with any server-persisted secrets
+  const diskSecrets = await loadSecrets();
+  const allKeysMap = new Map<string, KeyConfig>();
+  for (const k of diskSecrets) {
+    k.model = normalizeModelName(k.provider, k.model);
+    allKeysMap.set(k.id, k);
+  }
+  for (const k of userKeys) {
+    k.model = normalizeModelName(k.provider, k.model);
+    allKeysMap.set(k.id, k);
+  }
+  const activePool = Array.from(allKeysMap.values()).filter(k => 
+    Boolean(k.isActive && k.apiKey)
+  );
+
+  if (process.env.GEMINI_API_KEY && !preferOnlyCustomKeys) {
+    const hasStudio = activePool.some(k => k.id === 'studio_primary_key');
+    if (!hasStudio) {
+      activePool.push({
+        id: 'studio_primary_key',
+        name: 'Primary Studio Engine',
+        provider: 'gemini',
+        apiKey: process.env.GEMINI_API_KEY,
+        model: 'gemini-3.1-flash-lite',
+        isActive: true,
+        rpmLimit: 60,
+        status: 'healthy'
+      });
+    }
+  }
+
+  if (activePool.length === 0) {
+    addSystemLog({
+      level: 'error',
+      category: 'auth',
+      message: 'রিকোয়েস্ট বাতিল: কোনো সচল সিক্রেট কী পাওয়া যায়নি। প্রাইমারি ইঞ্জিন নিষ্ক্রিয় রাখা হয়েছে।'
+    });
+    sendEvent({
+      type: "error",
+      error: "⚠️ কোনো সচল প্রোভাইডার কী পাওয়া যায়নি! Keys ট্যাবে Gemini / Groq / OpenRouter কী যুক্ত করুন, অথবা env vars সেট করুন (GEMINI_API_KEYS / GROQ_API_KEYS / OPENROUTER_API_KEYS — দেখুন README)।",
+      isAuthError: true
+    });
+    res.end();
+    return;
+  }
+
+  const excludedKeyIds = new Set<string>();
+  const maxAttempts = activePool.length;
+  let attempts = 0;
+  let succeeded = false;
+  let sawDailyFreeLimit = false;
+  let sawRateLimit = false;
+  let sawProviderOverload = false;
+  let sawAuthError = false;
+  // Per-minute-limit tracking for the all-keys-RPM wait-and-retry: RPM/TPM
+  // budgets roll over every minute, so if every key failed only on RPM/TPM
+  // (never daily, never auth), the turn waits once and retries the pool.
+  let sawRpmLimit = false;
+  let lastRetryAfterSec = 60;
+  let didMinuteRolloverRetry = false;
+  let lastFailureMessage = '';
+  const failedGeminiModels = new Set<string>();
+
+  const buildGeminiModelChain = (primary?: string | null) => {
+    // Hydrogen-first: same model across all keys first (key rotation keeps
+    // quality at 100%); 3.8 Flash next (also key-rotated); Flash-Lite last.
+    const defaults = [
+      'gemini-4-hydrogen',
+      'gemini-3.8-flash',
+      'gemini-3.6-flash',
+      'gemini-3.1-flash-lite',
+    ];
+    const ordered = primary
+      ? [primary, ...defaults.filter(m => m !== primary)]
+      : defaults;
+    return ordered.filter(m => !failedGeminiModels.has(m));
+  };
+
+  while (attempts < maxAttempts && !succeeded) {
+    attempts++;
+    
+    // Select the best key: prioritizes remembered working key, otherwise rotates through every remaining active key
+    const { key, reason: selectionReason } = selectBestKey(activePool, preferredProvider, excludedKeyIds, reqStickyKeyId);
+
+    if (key) {
+      excludedKeyIds.add(key.id);
+      if (selectionReason) {
+        sendEvent({ type: "action", action: `🔑 ${selectionReason}: ${key.name}` });
+      }
+      const activeModel = key.provider === 'gemini'
+        ? (explicitGeminiModel || normalizeModelName('gemini', key.model))
+        : (key.model || 'default');
+      sendEvent({
+        type: "key_active",
+        keyId: key.id,
+        keyName: key.name,
+        provider: key.provider,
+        model: activeModel,
+        isCustomKey: key.id !== 'studio_primary_key'
+      });
+      sendEvent({
+        type: "action",
+        action: `Routing via ${key.name} (${key.provider.toUpperCase()} • ${activeModel})...`
+      });
+      emitActionStep(
+        sendEvent,
+        'command',
+        `Connected ${key.name} (${activeModel})`,
+        `${key.provider.toUpperCase()} • ${activeModel}`,
+        { status: 'done' }
+      );
+
+      const buildExecCtx = (invoker: (sys: string, usr: string) => Promise<string>): ToolExecutionContext => ({
+        sessionId,
+        llmInvoker: invoker,
+        onAskQuestion: (questions) => {
+          const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          return new Promise((resolve) => {
+            const timer = setTimeout(() => {
+              if (pendingQuestionResolvers.delete(questionId)) {
+                resolve({ answers: {}, skipped: true, notes: 'Timed out waiting for response.' });
+              }
+            }, 120000);
+            pendingQuestionResolvers.set(questionId, { resolve, timer });
+            res.once('close', () => {
+              if (pendingQuestionResolvers.delete(questionId)) {
+                clearTimeout(timer);
+                resolve({ answers: {}, skipped: true, notes: 'Client disconnected.' });
+              }
+            });
+            sendEvent({
+              type: 'ask_question',
+              questionId,
+              questions,
+            });
+          });
+        },
+        onAgentStep: (agentStep) => {
+          emitActionStep(sendEvent, agentStep.kind, agentStep.label, agentStep.detail, {
+            id: agentStep.id,
+            status: agentStep.status,
+            durationSec: agentStep.durationSec,
+            isError: agentStep.status === 'error',
+          });
+        },
+      });
+
+      try {
+        if (key.provider === 'gemini') {
+          const cleanGeminiKey = key.apiKey.trim().replace(/^["']|["']$/g, '');
+          let client = new GoogleGenAI({
+            apiKey: cleanGeminiKey,
+            httpOptions: {
+              headers: {
+                "User-Agent": "aistudio-build"
+              }
+            }
+          });
+          const geminiChain = buildGeminiModelChain(explicitGeminiModel || normalizeModelName('gemini', key.model));
+          // FIX (2026-11-27): when every model in the chain was already
+          // marked failed this turn, geminiChain is EMPTY and the candidate
+          // loop below runs zero times — fullText stays '' and the code
+          // fell through to `done` with an empty reply (silent success).
+          // An empty chain is a failure, not a success.
+          if (geminiChain.length === 0) {
+            throw new Error('All Gemini models in this turn\u2019s chain were already tried and failed — rotating to the next key.');
+          }
+          let fullText = '';
+          let usedModel = geminiChain[0];
+          let geminiChainErr: any = null;
+          let triedVertexExpress = false;
+
+          for (const candidateModel of geminiChain) {
+            usedModel = candidateModel;
+            try {
+              const execCtx = buildExecCtx(async (sys, usr) => {
+                const subRes = await client.models.generateContent({
+                  model: candidateModel,
+                  contents: usr,
+                  config: { systemInstruction: sys },
+                });
+                return subRes.text || '';
+              });
+
+              fullText = await runGeminiAgentLoop(
+                client,
+                candidateModel,
+                mode,
+                systemOptions,
+                history,
+                lastMessage,
+                initialLastMessage,
+                sendEvent,
+                execCtx,
+                key,
+                allowTools,
+                usageLedger
+              );
+              geminiChainErr = null;
+              break;
+            } catch (mErr: any) {
+              geminiChainErr = mErr;
+              const mMsg = mErr?.message || '';
+              if (!triedVertexExpress && cleanGeminiKey.startsWith('AQ.') && /ACCESS_TOKEN_TYPE_UNSUPPORTED|API key not valid/i.test(mMsg)) {
+                triedVertexExpress = true;
+                try {
+                  client = new GoogleGenAI({
+                    vertexai: true,
+                    apiKey: cleanGeminiKey,
+                    httpOptions: { headers: { "User-Agent": "aistudio-build" } }
+                  });
+                  const vExecCtx = buildExecCtx(async (sys, usr) => {
+                    const subRes = await client.models.generateContent({
+                      model: candidateModel,
+                      contents: usr,
+                      config: { systemInstruction: sys },
+                    });
+                    return subRes.text || '';
+                  });
+                  fullText = await runGeminiAgentLoop(
+                    client,
+                    candidateModel,
+                    mode,
+                    systemOptions,
+                    history,
+                    lastMessage,
+                    initialLastMessage,
+                    sendEvent,
+                    vExecCtx,
+                    key,
+                    allowTools,
+                    usageLedger
+                  );
+                  geminiChainErr = null;
+                  break;
+                } catch (vErr: any) {
+                  geminiChainErr = vErr;
+                }
+              }
+              // 429 / quota is a PER-KEY limit, not a model problem: do NOT
+              // mark the model failed and do NOT drop to a weaker model on
+              // this key. Break out so the outer loop rotates to the NEXT
+              // KEY with the SAME model (zero quality loss). Only 404/503
+              // (model unavailable for this key/project) fall through to the
+              // next model on the same key.
+              const isQuota = mErr?.status === 429 || /429|quota|resource_exhausted|rate limit|free-models-per-day/i.test(mMsg);
+              if (isQuota) {
+                sendEvent({
+                  type: "action",
+                  action: `⚡ ${candidateModel}: this key hit its limit — rotating to the next key, same model...`
+                });
+                break;
+              }
+              // FIX (2026-11-27): a 401/auth failure is a PER-KEY problem,
+              // not a model problem — the model is fine for other keys. The
+              // old code added the model to failedGeminiModels on ANY
+              // failure, so four keys with bad keys burned all four models
+              // and the next key got an empty chain (silent empty reply).
+              // Only 404/503 (model unavailable) blacklists the model.
+              const isAuth = mErr?.status === 401 || /401|API key not valid|UNAUTHENTICATED|ACCESS_TOKEN_TYPE_UNSUPPORTED|User not found/i.test(mMsg);
+              const isModelRetryable =
+                mErr?.status === 503 ||
+                mErr?.status === 404 ||
+                /503|404|high demand|UNAVAILABLE|not found|not supported/i.test(mMsg);
+              if (isAuth || !isModelRetryable) throw geminiChainErr;
+              failedGeminiModels.add(candidateModel);
+              sendEvent({
+                type: "action",
+                action: `⚡ ${candidateModel} unavailable, switching to backup Gemini model...`
+              });
+            }
+          }
+
+          if (geminiChainErr) throw geminiChainErr;
+
+          recordKeySuccess(key.id);
+          addSystemLog({
+            level: 'success',
+            category: 'execution',
+            keyName: key.name,
+            provider: key.provider,
+            model: usedModel,
+            message: `✓ Success: ${key.name} responded successfully (${usedModel}). Saved as sticky key for next turn.`
+          });
+          const deployed = await autoDeployWebsiteFromText(fullText, sessionId);
+          if (deployed.success) {
+            const previewUrl = deployed.url || "/projects/index.html";
+            sendEvent({ type: "action", action: `✓ Website deployed to ${previewUrl}! Live Preview ready.` });
+            sendEvent({ type: "file_modified", filePath: deployed.path || 'projects/index.html', action: 'created' });
+            emitActionStep(sendEvent, 'build', 'Deployed PWA preview', previewUrl, { status: 'done' });
+            sendEvent({ 
+              type: "preview_ready", 
+              url: previewUrl, 
+              sessionId,
+              html: deployed.html,
+              timestamp: Date.now() 
+            });
+          }
+          emitActionStep(sendEvent, 'respond', 'Responded', undefined, { status: 'done' });
+          finalAssistantText = fullText;
+          sendEvent({ 
+            type: "done", 
+            fullText, 
+            activeKeyId: key.id,
+            keyName: key.name,
+            provider: key.provider,
+            model: usedModel,
+            isCustomKey: key.id !== 'studio_primary_key'
+          });
+          succeeded = true;
+          break;
+        } 
+        else if (['openrouter', 'groq', 'cerebras', 'mistral', 'grok', 'custom', 'freellmapi'].includes(key.provider)) {
+          // Quality-ordered routing: the turn's first model comes from the
+          // live chain for its task (coding → Hydrogen first when live;
+          // planning → strongest free reasoner; chat → fastest). The
+          // configured model is the fallback when discovery has no data.
+          const configuredModel = normalizeModelName(key.provider, key.model);
+          const targetModel = routeTurnModel(initialLastMessage, configuredModel);
+          const turnEffort = turnReasoningEffort(initialLastMessage);
+          const endpoint = getOpenAICompatibleEndpoint(key.provider, key.baseUrl);
+          const extraHeaders: Record<string, string> = key.provider === 'openrouter'
+            ? { 'HTTP-Referer': 'https://nexus-ai.local', 'X-Title': 'Nexus AI' }
+            : {};
+
+          // Planner sub-calls (Architect / Reviewer / debug analysis) run on
+          // the planning chain — strongest free reasoner, high effort by
+          // default, xhigh only for hard plans — with the same endpoint/key.
+          const execCtx = buildExecCtx(async (sys, usr) => {
+            const effort = pickPlanningEffort(usr);
+            const chain = planningChain();
+            let lastErr = '';
+            for (const model of chain) {
+              try {
+                noteModelAttempt(model, key.id);
+                const subRes = await fetch(endpoint, {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${key.apiKey}`,
+                    'Content-Type': 'application/json',
+                    ...extraHeaders,
+                  },
+                  body: JSON.stringify({
+                    model,
+                    messages: [
+                      { role: 'system', content: sys },
+                      { role: 'user', content: usr },
+                    ],
+                    reasoning_effort: effort,
+                    stream: false,
+                  }),
+                });
+                const j = await subRes.json().catch(() => null);
+                const content = j?.choices?.[0]?.message?.content || '';
+                if (subRes.ok && content) {
+                  recordModelSuccess(model);
+                  const pu = j?.usage;
+                  addLlmStep(usageLedger, { kind: 'plan', model, tier: costTierOfModel(model), promptTokens: pu?.prompt_tokens ?? estimateTokens(sys + usr), completionTokens: pu?.completion_tokens ?? estimateTokens(content), estimated: !pu, note: 'planner sub-call' });
+                  return content;
+                }
+                recordModelFailure(model, subRes.status, subRes.headers.get('retry-after'));
+                lastErr = j?.error?.message || `HTTP ${subRes.status}`;
+              } catch (e: any) {
+                lastErr = e?.message || String(e);
+              }
+            }
+            console.warn(`[planner] All planning models failed: ${lastErr}`);
+            return '';
+          });
+
+          const fullText = await streamOpenAICompatible(
+            endpoint,
+            key.apiKey,
+            targetModel,
+            extraHeaders,
+            messages,
+            mode,
+            sendEvent,
+            systemOptions,
+            execCtx,
+            lastMessage,
+            initialLastMessage,
+            key,
+            allowTools,
+            turnEffort,
+            usageLedger
+          );
+
+          recordKeySuccess(key.id);
+          addSystemLog({
+            level: 'success',
+            category: 'execution',
+            keyName: key.name,
+            provider: key.provider,
+            model: targetModel,
+            message: `✓ Success: ${key.name} (${key.provider.toUpperCase()} · ${targetModel}) responded successfully. Saved as sticky key for next turn.`
+          });
+          const deployed = await autoDeployWebsiteFromText(fullText, sessionId);
+          if (deployed.success) {
+            const previewUrl = deployed.url || "/projects/index.html";
+            sendEvent({ type: "action", action: `✓ Website deployed to ${previewUrl}! Live Preview ready.` });
+            sendEvent({ type: "file_modified", filePath: deployed.path || 'projects/index.html', action: 'created' });
+            emitActionStep(sendEvent, 'build', 'Deployed PWA preview', previewUrl, { status: 'done' });
+            sendEvent({ 
+              type: "preview_ready", 
+              url: previewUrl, 
+              sessionId,
+              html: deployed.html,
+              timestamp: Date.now() 
+            });
+          }
+          emitActionStep(sendEvent, 'respond', 'Responded', undefined, { status: 'done' });
+          finalAssistantText = fullText;
+          sendEvent({ 
+            type: "done", 
+            fullText, 
+            activeKeyId: key.id,
+            keyName: key.name,
+            provider: key.provider,
+            model: targetModel,
+            isCustomKey: true
+          });
+          succeeded = true;
+          break;
+        }
+      } catch (err: any) {
+        const errMsg = String(err?.message || err || 'Unknown error');
+        lastFailureMessage = errMsg;
+        const isDailyFreeLimit = /free-models-per-day/i.test(errMsg);
+        const is429 = err.status === 429 || errMsg.includes("429") || /quota|rate limit|free-models-per-day/i.test(errMsg);
+        const is503 = err.status === 503 || err.status === 502 || /503|502|high demand|provider returned error|unavailable/i.test(errMsg);
+        const is404Model = err.status === 404 || /not found|not supported for generateContent/i.test(errMsg);
+        const isQuotaExceeded = is429 || /quota exceeded|resource_exhausted/i.test(errMsg);
+        const isAuthError = err.status === 401 || err.code === 401 || /401|API key not valid|UNAUTHENTICATED|User not found|ACCESS_TOKEN_TYPE_UNSUPPORTED/i.test(errMsg);
+
+        // Which budget did this 429 hit? RPM/TPM = per-minute (seconds-long,
+        // rolling reset); RPD = daily (until midnight Pacific). Parsed from
+        // the provider's error text — never assumed. Retry-After is read from
+        // the message when present ("retry after 42s" / "retry in 42 seconds").
+        const limitKind: RateLimitKind | null = is429 ? classifyRateLimit(err.status === 429 ? 429 : undefined, errMsg) : null;
+        const retryAfterMatch = /retry[- ]after\s*[:=]?\s*(\d+)|retry in\s+(\d+)\s*s/i.exec(errMsg);
+        const retryAfterSec = retryAfterMatch ? Number(retryAfterMatch[1] || retryAfterMatch[2]) : parseRetryAfter(null);
+        if (limitKind === 'rpm' || limitKind === 'tpm') {
+          sawRpmLimit = true;
+          lastRetryAfterSec = Math.max(1, Math.min(60, retryAfterSec ?? 60));
+        }
+
+        if (isDailyFreeLimit) sawDailyFreeLimit = true;
+        if (isQuotaExceeded) sawRateLimit = true;
+        if (is503) sawProviderOverload = true;
+        if (isAuthError) sawAuthError = true;
+
+        if (isAuthError) {
+          addSystemLog({
+            level: 'error',
+            category: 'auth',
+            keyName: key.name,
+            provider: key.provider,
+            model: key.model,
+            message: `❌ ${key.name}: Invalid API Key (401 Unauthorized / Access Token Unsupported). Key disabled.`,
+            details: errMsg
+          });
+          key.isActive = false;
+          loadSecrets().then((allSecrets) => {
+            const existing = allSecrets.find(k => k.id === key.id);
+            if (existing) {
+              existing.isActive = false;
+              existing.status = 'error';
+              existing.lastError = 'Invalid API key format or unauthorized';
+              saveSecrets(allSecrets).catch(() => {});
+            }
+          }).catch(() => {});
+          recordKeyCooldown(key.id, 86400, "Invalid API key");
+          sendEvent({
+            type: "action",
+            action: `❌ ${key.name}: Invalid API Key (Unauthorized). Key has been disabled.`
+          });
+        } else {
+          // Auto-heal ONLY when the model itself is unavailable (404/503).
+          // A quota 429 must NEVER rewrite the key's model to Flash-Lite:
+          // rotation to the next key keeps the SAME model (Hydrogen-first).
+          if ((is404Model || is503) && key.provider === 'gemini' && key.model !== 'gemini-3.1-flash-lite') {
+            const oldModel = key.model;
+            key.model = 'gemini-3.1-flash-lite';
+            loadSecrets().then((allSecrets) => {
+              const existing = allSecrets.find(k => k.id === key.id);
+              if (existing) {
+                existing.model = 'gemini-3.1-flash-lite';
+                saveSecrets(allSecrets).catch(() => {});
+              }
+            }).catch(() => {});
+            addSystemLog({
+              level: 'warn',
+              category: 'rotation',
+              keyName: key.name,
+              provider: key.provider,
+              message: `⚡ Auto-healed ${key.name} from ${oldModel} to Gemini 3.1 Flash Lite.`
+            });
+          }
+
+          // Cooldown by budget kind. RPM/TPM: short (~65s or Retry-After) —
+          // the next key has a fresh per-minute budget, so the request goes
+          // through with no wait. RPD: parked until midnight Pacific.
+          // The UI never sees a raw 429 — only the plain-words label.
+          const kind = limitKind ?? (isDailyFreeLimit ? 'rpd' as RateLimitKind : null);
+          let cooldownSec: number;
+          if (kind) {
+            recordKeyRateLimit(key.id, kind, kind === 'rpd' ? null : lastRetryAfterSec, errMsg);
+            cooldownSec = kind === 'rpd'
+              ? Math.ceil((nextMidnightPacificMs() - Date.now()) / 1000)
+              : Math.max(65, lastRetryAfterSec);
+          } else {
+            cooldownSec = isQuotaExceeded ? 60 : 15;
+            recordKeyCooldown(key.id, cooldownSec, errMsg);
+          }
+          const friendly = kind
+            ? limitLabel(kind, kind === 'rpd' ? undefined : cooldownSec)
+            : (is429 ? 'rate limit — retrying shortly' : 'provider error');
+          addSystemLog({
+            level: 'warn',
+            category: isQuotaExceeded ? 'rate_limit' : 'execution',
+            keyName: key.name,
+            provider: key.provider,
+            message: `⚠️ ${key.name} rotated (${friendly}).`,
+            details: errMsg
+          });
+          sendEvent({
+            type: "action",
+            action: `⚠️ ${key.name}: ${friendly}. Auto-rotating to next healthy API key...`
+          });
+          sendEvent({
+            type: "key_cooldown",
+            keyId: key.id,
+            reason: friendly,
+            cooldownSec,
+            limitKind: kind
+          });
+        }
+      }
+    } else {
+      // No key left to try. If EVERY failure this turn was a per-minute
+      // (RPM/TPM) limit — never daily, never auth — the budgets roll over
+      // every minute, so wait once (Retry-After, max 60s) and retry the pool
+      // with fresh per-minute budgets instead of failing the turn.
+      if (!succeeded && sawRpmLimit && !sawDailyFreeLimit && !sawAuthError && !didMinuteRolloverRetry) {
+        didMinuteRolloverRetry = true;
+        const waitSec = Math.max(1, Math.min(60, lastRetryAfterSec || 60));
+        addSystemLog({
+          level: 'info',
+          category: 'rate_limit',
+          message: `⏱️ All keys hit per-minute limits — waiting ${waitSec}s for the minute to roll over, then retrying the pool.`
+        });
+        sendEvent({ type: 'action', action: `⏱️ সব কী-তে per-minute limit — ${waitSec}s অপেক্ষা করে আবার চেষ্টা করা হচ্ছে...` });
+        sendEvent({ type: 'rate_limit_wait', kind: 'rpm', waitSec });
+        await new Promise(r => setTimeout(r, waitSec * 1000));
+        // The minute rolled over: clear per-minute cooldowns and retry every key once.
+        for (const k of activePool) {
+          const st = getOrCreateStats(k.id);
+          if (st.limitKind === 'rpm' || st.limitKind === 'tpm') st.cooldownUntil = 0;
+        }
+        excludedKeyIds.clear();
+        attempts = 0;
+        sawRpmLimit = false;
+        continue;
+      }
+      addSystemLog({
+        level: 'warn',
+        category: 'rotation',
+        message: 'পুল থেকে আর কোনো সক্রিয় ও প্রস্তুত সিক্রেট কী পাওয়া যায়নি।'
+      });
+      break;
+    }
+  }
+
+  // Seamless Fallback: If custom keys hit errors or rate limits, auto-fallback across resilient Gemini Studio models
+  if (!succeeded && !preferOnlyCustomKeys && process.env.GEMINI_API_KEY) {
+    const client = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY,
+      httpOptions: { headers: { "User-Agent": "aistudio-build" } }
+    });
+    const fallbackChain = buildGeminiModelChain(explicitGeminiModel);
+
+    for (const fallbackModel of fallbackChain) {
+      try {
+        addSystemLog({
+          level: 'info',
+          category: 'rotation',
+          message: `স্বয়ংক্রিয় ব্যাকআপ হিসেবে প্রাইমারি স্টুডিও ইঞ্জিন (${fallbackModel}) চেষ্টা করা হচ্ছে...`
+        });
+        sendEvent({
+          type: "key_active",
+          keyId: "studio_primary",
+          keyName: "Primary Studio Engine",
+          provider: "gemini",
+          model: fallbackModel,
+          isCustomKey: false
+        });
+        sendEvent({
+          type: "action",
+          action: `⚡ প্রাইমারি স্টুডিও ইঞ্জিন (${fallbackModel}) সক্রিয় করা হয়েছে...`
+        });
+
+        const fbExecCtx: ToolExecutionContext = {
+          sessionId,
+          llmInvoker: async (sys, usr) => {
+            const subRes = await client.models.generateContent({
+              model: fallbackModel,
+              contents: usr,
+              config: { systemInstruction: sys },
+            });
+            return subRes.text || '';
+          },
+          onAgentStep: (agentStep) => {
+            emitActionStep(sendEvent, agentStep.kind, agentStep.label, agentStep.detail, {
+              id: agentStep.id,
+              status: agentStep.status,
+              durationSec: agentStep.durationSec,
+              isError: agentStep.status === 'error',
+            });
+          },
+        };
+
+        const fullText = await runGeminiAgentLoop(
+          client,
+          fallbackModel,
+          mode,
+          systemOptions,
+          history,
+          lastMessage,
+          initialLastMessage,
+          sendEvent,
+          fbExecCtx,
+          undefined,
+          allowTools,
+          usageLedger
+        );
+
+        succeeded = true;
+        persistStickyKeyId("studio_primary");
+
+        const deployed = await autoDeployWebsiteFromText(fullText, sessionId);
+        if (deployed.success) {
+          const previewUrl = deployed.url || "/projects/index.html";
+          sendEvent({ type: "action", action: `✓ Website deployed to ${previewUrl}! Live Preview ready.` });
+          sendEvent({ type: "file_modified", filePath: deployed.path || 'projects/index.html', action: 'created' });
+          emitActionStep(sendEvent, 'build', 'Deployed PWA preview', previewUrl, { status: 'done' });
+          sendEvent({ type: "preview_ready", url: previewUrl, html: deployed.html, sessionId: sessionId || undefined });
+        }
+
+        emitActionStep(sendEvent, 'respond', 'Responded', undefined, { status: 'done' });
+        sendEvent({ type: "done", keyId: "studio_primary", model: fallbackModel });
+        break;
+      } catch (fbErr: any) {
+        const fbMsg = String(fbErr?.message || fbErr || '');
+        lastFailureMessage = fbMsg;
+        if (/503|high demand|UNAVAILABLE/i.test(fbMsg)) sawProviderOverload = true;
+        if (/429|quota|rate limit/i.test(fbMsg)) sawRateLimit = true;
+        addSystemLog({
+          level: 'warn',
+          category: 'rotation',
+          provider: 'gemini',
+          model: fallbackModel,
+          message: `প্রাইমারি ব্যাকআপ মডেল (${fallbackModel}) ব্যস্ত/ব্যর্থ: ${fbMsg.slice(0, 120)}`
+        });
+      }
+    }
+  }
+
+  if (!succeeded) {
+    let finalUserError = "⚠️ প্রোভাইডার সাময়িকভাবে সাড়া দিচ্ছে না। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।";
+    let finalIsAuthError = false;
+
+    if (sawDailyFreeLimit) {
+      finalUserError = "⚠️ আপনার OpenRouter ফ্রি কী-টির দৈনিক লিমিট (free-models-per-day) শেষ হয়ে গেছে। চালু রাখতে 🔑 API Keys মেনুতে নতুন একটি Gemini / Groq / OpenRouter কী যুক্ত করুন।";
+    } else if (sawRateLimit && !sawAuthError) {
+      finalUserError = "⚠️ বর্তমান API কী-গুলোর per-minute রেট লিমিট পূর্ণ হয়েছে। অনুগ্রহ করে ৩০-৬০ সেকেন্ড অপেক্ষা করুন অথবা 🔑 মেনুতে বিকল্প কী যুক্ত করুন।";
+    } else if (sawProviderOverload && !sawAuthError) {
+      finalUserError = "⚠️ এআই মডেল প্রোভাইডার সাময়িকভাবে অতিরিক্ত ব্যস্ত (503 High Demand / Provider Error)। অনুগ্রহ করে কয়েক সেকেন্ড পর আবার চেষ্টা করুন।";
+    } else if (sawAuthError) {
+      finalUserError = "⚠️ আপনার যুক্ত করা সিক্রেট কীগুলোতে অনুমোদন সমস্যা রয়েছে (401 Unauthorized / Invalid Key)। অনুগ্রহ করে 🔑 মেনু থেকে কীগুলোর স্থিতি চেক করুন।";
+      finalIsAuthError = true;
+    } else if (lastFailureMessage) {
+      finalUserError = `⚠️ রিকোয়েস্ট সম্পন্ন করা যায়নি: ${lastFailureMessage.slice(0, 180)}`;
+    }
+
+    addSystemLog({
+      level: 'error',
+      category: finalIsAuthError ? 'auth' : sawRateLimit ? 'rate_limit' : 'execution',
+      message: finalUserError
+    });
+    sendEvent({
+      type: "error",
+      error: finalUserError,
+      isAuthError: finalIsAuthError
+    });
+  }
+
+  // Save the turn to server chat history + record usage for the UI.
+  if (finalAssistantText) {
+    await saveChatTurn(sessionId || 'default', initialLastMessage, finalAssistantText).catch(() => {});
+  }
+  const totals = usageTotals(usageLedger);
+  recordTurnUsage(sessionId || 'default', totals);
+  sendEvent({ type: 'usage_summary', usage: totals });
+
+  res.end();
+}

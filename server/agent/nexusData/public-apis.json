@@ -1,0 +1,1602 @@
+[
+ {
+  "name": "Open-Meteo",
+  "url": "https://open-meteo.com",
+  "auth": "none",
+  "category": "weather",
+  "descriptionBn": "চাবি ছাড়াই বিনামূল্যে আবহাওয়ার পূর্বাভাস দেয়।",
+  "descriptionEn": "Free weather forecasts with no API key."
+ },
+ {
+  "name": "OpenWeatherMap",
+  "url": "https://openweathermap.org/api",
+  "auth": "api_key",
+  "category": "weather",
+  "descriptionBn": "বর্তমান আবহাওয়া ও পূর্বাভাস দেয়।",
+  "descriptionEn": "Current weather and forecasts for any city."
+ },
+ {
+  "name": "WeatherAPI",
+  "url": "https://www.weatherapi.com/",
+  "auth": "api_key",
+  "category": "weather",
+  "descriptionBn": "বর্তমান আবহাওয়া, পূর্বাভাস ও সতর্কবার্তা দেয়।",
+  "descriptionEn": "Current weather, forecasts and alerts."
+ },
+ {
+  "name": "wttr.in",
+  "url": "https://wttr.in",
+  "auth": "none",
+  "category": "weather",
+  "descriptionBn": "টার্মিনাল থেকে আবহাওয়া দেখার সহজ সেবা।",
+  "descriptionEn": "Simple weather service, usable from a terminal."
+ },
+ {
+  "name": "National Weather Service",
+  "url": "https://www.weather.gov/documentation/services-web-api",
+  "auth": "none",
+  "category": "weather",
+  "descriptionBn": "যুক্তরাষ্ট্রের সরকারি আবহাওয়া তথ্য দেয়।",
+  "descriptionEn": "Official US government weather data."
+ },
+ {
+  "name": "7Timer!",
+  "url": "https://www.7timer.info/doc.php",
+  "auth": "none",
+  "category": "weather",
+  "descriptionBn": "জ্যোতির্বিজ্ঞান ও আবহাওয়ার পূর্বাভাস দেয়।",
+  "descriptionEn": "Weather and astronomy forecasts."
+ },
+ {
+  "name": "Visual Crossing",
+  "url": "https://www.visualcrossing.com/weather-api",
+  "auth": "api_key",
+  "category": "weather",
+  "descriptionBn": "ঐতিহাসিক ও ভবিষ্যৎ আবহাওয়ার তথ্য দেয়।",
+  "descriptionEn": "Historical and forecast weather data."
+ },
+ {
+  "name": "Tomorrow.io",
+  "url": "https://www.tomorrow.io/weather-api/",
+  "auth": "api_key",
+  "category": "weather",
+  "descriptionBn": "মিনিটভিত্তিক আবহাওয়ার পূর্বাভাস দেয়।",
+  "descriptionEn": "Minute-by-minute weather forecasts."
+ },
+ {
+  "name": "AccuWeather",
+  "url": "https://developer.accuweather.com/",
+  "auth": "api_key",
+  "category": "weather",
+  "descriptionBn": "বিস্তারিত আবহাওয়ার পূর্বাভাস দেয়।",
+  "descriptionEn": "Detailed weather forecasts worldwide."
+ },
+ {
+  "name": "Weatherbit",
+  "url": "https://www.weatherbit.io/api",
+  "auth": "api_key",
+  "category": "weather",
+  "descriptionBn": "বর্তমান আবহাওয়া ও ১৬ দিনের পূর্বাভাস দেয়।",
+  "descriptionEn": "Current weather and 16-day forecasts."
+ },
+ {
+  "name": "Alpha Vantage",
+  "url": "https://www.alphavantage.co/",
+  "auth": "api_key",
+  "category": "finance",
+  "descriptionBn": "শেয়ার, ফরেক্স ও ক্রিপ্টোর তথ্য দেয়।",
+  "descriptionEn": "Stock, forex and crypto market data."
+ },
+ {
+  "name": "Finnhub",
+  "url": "https://finnhub.io/",
+  "auth": "api_key",
+  "category": "finance",
+  "descriptionBn": "রিয়েল-টাইম শেয়ারবাজারের তথ্য দেয়।",
+  "descriptionEn": "Real-time stock market data."
+ },
+ {
+  "name": "Twelve Data",
+  "url": "https://twelvedata.com/",
+  "auth": "api_key",
+  "category": "finance",
+  "descriptionBn": "শেয়ার, ফরেক্স ও ক্রিপ্টোর রিয়েল-টাইম তথ্য দেয়।",
+  "descriptionEn": "Real-time data for stocks, forex and crypto."
+ },
+ {
+  "name": "Polygon.io",
+  "url": "https://polygon.io/",
+  "auth": "api_key",
+  "category": "finance",
+  "descriptionBn": "মার্কিন শেয়ারবাজারের বিস্তারিত তথ্য দেয়।",
+  "descriptionEn": "Detailed US stock market data."
+ },
+ {
+  "name": "Financial Modeling Prep",
+  "url": "https://financialmodelingprep.com/developer/docs/",
+  "auth": "api_key",
+  "category": "finance",
+  "descriptionBn": "কোম্পানির আর্থিক বিবরণী ও শেয়ারের তথ্য দেয়।",
+  "descriptionEn": "Company financials and stock data."
+ },
+ {
+  "name": "Marketstack",
+  "url": "https://marketstack.com/",
+  "auth": "api_key",
+  "category": "finance",
+  "descriptionBn": "বিশ্বের ৭০টির বেশি এক্সচেঞ্জের শেয়ারের তথ্য দেয়।",
+  "descriptionEn": "Stock data from 70+ exchanges worldwide."
+ },
+ {
+  "name": "IEX Cloud",
+  "url": "https://iexcloud.io/",
+  "auth": "api_key",
+  "category": "finance",
+  "descriptionBn": "শেয়ারের দাম ও কোম্পানির তথ্য দেয়।",
+  "descriptionEn": "Stock prices and company data."
+ },
+ {
+  "name": "FRED",
+  "url": "https://fred.stlouisfed.org/docs/api/fred/",
+  "auth": "api_key",
+  "category": "finance",
+  "descriptionBn": "যুক্তরাষ্ট্রের অর্থনৈতিক পরিসংখ্যান দেয়।",
+  "descriptionEn": "US economic statistics and indicators."
+ },
+ {
+  "name": "EODHD",
+  "url": "https://eodhd.com/",
+  "auth": "api_key",
+  "category": "finance",
+  "descriptionBn": "দৈনিক শেয়ারের তথ্য ও মৌলিক বিশ্লেষণ দেয়।",
+  "descriptionEn": "End-of-day stock data and fundamentals."
+ },
+ {
+  "name": "Yahoo Finance",
+  "url": "https://github.com/ranaroussi/yfinance",
+  "auth": "none",
+  "category": "finance",
+  "descriptionBn": "শেয়ারবাজারের তথ্য নেওয়ার অনানুষ্ঠানিক উপায়।",
+  "descriptionEn": "Unofficial way to fetch Yahoo Finance market data."
+ },
+ {
+  "name": "NewsAPI",
+  "url": "https://newsapi.org/",
+  "auth": "api_key",
+  "category": "news",
+  "descriptionBn": "বিশ্বের সংবাদ শিরোনাম ও নিবন্ধ খোঁজে।",
+  "descriptionEn": "Searches world news headlines and articles."
+ },
+ {
+  "name": "NewsData.io",
+  "url": "https://newsdata.io/",
+  "auth": "api_key",
+  "category": "news",
+  "descriptionBn": "বিশ্বজুড়ে সংবাদ ও ব্লগের তথ্য দেয়।",
+  "descriptionEn": "News and blog data from around the world."
+ },
+ {
+  "name": "GNews",
+  "url": "https://gnews.io/",
+  "auth": "api_key",
+  "category": "news",
+  "descriptionBn": "গুগল নিউজের শিরোনাম সংগ্রহ করে।",
+  "descriptionEn": "Collects Google News headlines."
+ },
+ {
+  "name": "Mediastack",
+  "url": "https://mediastack.com/",
+  "auth": "api_key",
+  "category": "news",
+  "descriptionBn": "রিয়েল-টাইম সংবাদের তথ্য দেয়।",
+  "descriptionEn": "Real-time news data."
+ },
+ {
+  "name": "Currents",
+  "url": "https://currentsapi.services/en",
+  "auth": "api_key",
+  "category": "news",
+  "descriptionBn": "বিভিন্ন ভাষায় সংবাদের তথ্য দেয়।",
+  "descriptionEn": "News data in many languages."
+ },
+ {
+  "name": "The Guardian Open Platform",
+  "url": "https://open-platform.theguardian.com/",
+  "auth": "api_key",
+  "category": "news",
+  "descriptionBn": "গার্ডিয়ানের নিবন্ধ ও কনটেন্ট দেয়।",
+  "descriptionEn": "Articles and content from The Guardian."
+ },
+ {
+  "name": "New York Times",
+  "url": "https://developer.nytimes.com/",
+  "auth": "api_key",
+  "category": "news",
+  "descriptionBn": "নিউ ইয়র্ক টাইমসের নিবন্ধ ও আর্কাইভ দেয়।",
+  "descriptionEn": "Articles and archive from The New York Times."
+ },
+ {
+  "name": "Hacker News",
+  "url": "https://github.com/HackerNews/API",
+  "auth": "none",
+  "category": "news",
+  "descriptionBn": "প্রযুক্তি সংবাদ ও আলোচনার তালিকা দেয়।",
+  "descriptionEn": "Tech news and discussions from Hacker News."
+ },
+ {
+  "name": "Dev.to",
+  "url": "https://developers.forem.com/api",
+  "auth": "api_key",
+  "category": "news",
+  "descriptionBn": "ডেভেলপারদের নিবন্ধ ও কমিউনিটি তথ্য দেয়।",
+  "descriptionEn": "Developer articles and community data."
+ },
+ {
+  "name": "Spaceflight News",
+  "url": "https://spaceflightnewsapi.net/",
+  "auth": "none",
+  "category": "news",
+  "descriptionBn": "মহাকাশ অভিযানের সংবাদ দেয়।",
+  "descriptionEn": "News about spaceflight missions."
+ },
+ {
+  "name": "LibreTranslate",
+  "url": "https://libretranslate.com/",
+  "auth": "api_key",
+  "category": "translation",
+  "descriptionBn": "ওপেন সোর্স মেশিন অনুবাদ সেবা।",
+  "descriptionEn": "Open-source machine translation service."
+ },
+ {
+  "name": "MyMemory",
+  "url": "https://mymemory.translated.net/doc/spec.php",
+  "auth": "none",
+  "category": "translation",
+  "descriptionBn": "বিনামূল্যে অনুবাদ মেমোরি থেকে অনুবাদ দেয়।",
+  "descriptionEn": "Free translations from a translation memory."
+ },
+ {
+  "name": "DeepL",
+  "url": "https://www.deepl.com/pro-api",
+  "auth": "api_key",
+  "category": "translation",
+  "descriptionBn": "উচ্চমানের মেশিন অনুবাদ দেয়।",
+  "descriptionEn": "High-quality machine translation."
+ },
+ {
+  "name": "Microsoft Translator",
+  "url": "https://learn.microsoft.com/azure/ai-services/translator/",
+  "auth": "api_key",
+  "category": "translation",
+  "descriptionBn": "মাইক্রোসফটের অনুবাদ সেবা।",
+  "descriptionEn": "Microsoft translation service."
+ },
+ {
+  "name": "Yandex Translate",
+  "url": "https://yandex.cloud/en/docs/translate/",
+  "auth": "api_key",
+  "category": "translation",
+  "descriptionBn": "ইয়ানডেক্সের অনুবাদ সেবা।",
+  "descriptionEn": "Yandex translation service."
+ },
+ {
+  "name": "Lingva Translate",
+  "url": "https://github.com/thedaviddelta/lingva-translate",
+  "auth": "none",
+  "category": "translation",
+  "descriptionBn": "গুগল অনুবাদের বিকল্প বিনামূল্যে সেবা।",
+  "descriptionEn": "Free alternative front-end for Google Translate."
+ },
+ {
+  "name": "Apertium",
+  "url": "https://www.apertium.org/",
+  "auth": "none",
+  "category": "translation",
+  "descriptionBn": "ওপেন সোর্স নিয়মভিত্তিক অনুবাদ।",
+  "descriptionEn": "Open-source rule-based translation."
+ },
+ {
+  "name": "Glosbe",
+  "url": "https://glosbe.com/a-api",
+  "auth": "none",
+  "category": "translation",
+  "descriptionBn": "অভিধান ও অনুবাদের তথ্য দেয়।",
+  "descriptionEn": "Dictionary and translation data."
+ },
+ {
+  "name": "Tatoeba",
+  "url": "https://tatoeba.org/en/api",
+  "auth": "none",
+  "category": "translation",
+  "descriptionBn": "বিভিন্ন ভাষায় উদাহরণ বাক্য দেয়।",
+  "descriptionEn": "Example sentences in many languages."
+ },
+ {
+  "name": "FunTranslations",
+  "url": "https://funtranslations.com/api",
+  "auth": "none",
+  "category": "translation",
+  "descriptionBn": "মজার ভাষায় (যেমন ইয়োদা) অনুবাদ করে।",
+  "descriptionEn": "Translates into fun languages like Yoda-speak."
+ },
+ {
+  "name": "OpenStreetMap Nominatim",
+  "url": "https://nominatim.org/release-docs/develop/api/Overview/",
+  "auth": "none",
+  "category": "maps",
+  "descriptionBn": "ঠিকানা থেকে স্থানাঙ্ক ও উল্টো খোঁজ দেয়।",
+  "descriptionEn": "Geocoding and reverse geocoding from OpenStreetMap."
+ },
+ {
+  "name": "OpenStreetMap Overpass",
+  "url": "https://overpass-turbo.eu/",
+  "auth": "none",
+  "category": "maps",
+  "descriptionBn": "ওপেনস্ট্রিটম্যাপের তথ্য জিজ্ঞাসা করে।",
+  "descriptionEn": "Queries OpenStreetMap data."
+ },
+ {
+  "name": "Mapbox",
+  "url": "https://docs.mapbox.com/api/",
+  "auth": "api_key",
+  "category": "maps",
+  "descriptionBn": "মানচিত্র, রুট ও স্থান খোঁজার সেবা।",
+  "descriptionEn": "Maps, routing and place search."
+ },
+ {
+  "name": "OpenRouteService",
+  "url": "https://openrouteservice.org/dev/",
+  "auth": "api_key",
+  "category": "maps",
+  "descriptionBn": "রুট, দূরত্ব ও আইসোক্রোন দেয়।",
+  "descriptionEn": "Routing, distances and isochrones."
+ },
+ {
+  "name": "Geoapify",
+  "url": "https://www.geoapify.com/",
+  "auth": "api_key",
+  "category": "maps",
+  "descriptionBn": "মানচিত্র, জিওকোডিং ও স্থান খোঁজে।",
+  "descriptionEn": "Maps, geocoding and place search."
+ },
+ {
+  "name": "LocationIQ",
+  "url": "https://locationiq.com/",
+  "auth": "api_key",
+  "category": "maps",
+  "descriptionBn": "জিওকোডিং ও মানচিত্রের টাইল দেয়।",
+  "descriptionEn": "Geocoding and map tiles."
+ },
+ {
+  "name": "HERE",
+  "url": "https://developer.here.com/",
+  "auth": "api_key",
+  "category": "maps",
+  "descriptionBn": "মানচিত্র, রুট ও ট্রাফিক তথ্য দেয়।",
+  "descriptionEn": "Maps, routing and traffic data."
+ },
+ {
+  "name": "TomTom",
+  "url": "https://developer.tomtom.com/",
+  "auth": "api_key",
+  "category": "maps",
+  "descriptionBn": "মানচিত্র, রুট ও ট্রাফিক সেবা দেয়।",
+  "descriptionEn": "Maps, routing and traffic services."
+ },
+ {
+  "name": "OpenCage",
+  "url": "https://opencagedata.com/api",
+  "auth": "api_key",
+  "category": "maps",
+  "descriptionBn": "জিওকোডিং সেবা দেয়।",
+  "descriptionEn": "Geocoding service."
+ },
+ {
+  "name": "Photon",
+  "url": "https://photon.komoot.io/",
+  "auth": "none",
+  "category": "maps",
+  "descriptionBn": "ওপেনস্ট্রিটম্যাপের দ্রুত জিওকোডার।",
+  "descriptionEn": "Fast geocoder for OpenStreetMap."
+ },
+ {
+  "name": "Open Library",
+  "url": "https://openlibrary.org/dev/docs/api",
+  "auth": "none",
+  "category": "books",
+  "descriptionBn": "বইয়ের তথ্য, প্রচ্ছদ ও ধার নেওয়ার সেবা।",
+  "descriptionEn": "Book data, covers and lending."
+ },
+ {
+  "name": "Google Books",
+  "url": "https://developers.google.com/books",
+  "auth": "api_key",
+  "category": "books",
+  "descriptionBn": "বই খোঁজা ও প্রিভিউ দেয়।",
+  "descriptionEn": "Book search and previews."
+ },
+ {
+  "name": "Gutendex",
+  "url": "https://gutendex.com/",
+  "auth": "none",
+  "category": "books",
+  "descriptionBn": "প্রজেক্ট গুটেনবার্গের বিনামূল্যে বই দেয়।",
+  "descriptionEn": "Free books from Project Gutenberg."
+ },
+ {
+  "name": "ISBNdb",
+  "url": "https://isbndb.com/apidocs",
+  "auth": "api_key",
+  "category": "books",
+  "descriptionBn": "আইএসবিএন দিয়ে বইয়ের তথ্য দেয়।",
+  "descriptionEn": "Book data by ISBN."
+ },
+ {
+  "name": "OpenBD",
+  "url": "https://openbd.jp/",
+  "auth": "none",
+  "category": "books",
+  "descriptionBn": "জাপানি বইয়ের তথ্য দেয়।",
+  "descriptionEn": "Japanese book data."
+ },
+ {
+  "name": "Library of Congress",
+  "url": "https://libraryofcongress.github.io/data-exploration/",
+  "auth": "none",
+  "category": "books",
+  "descriptionBn": "যুক্তরাষ্ট্রের জাতীয় গ্রন্থাগারের তথ্য দেয়।",
+  "descriptionEn": "Data from the US Library of Congress."
+ },
+ {
+  "name": "Internet Archive",
+  "url": "https://archive.org/advancedsearch.php",
+  "auth": "none",
+  "category": "books",
+  "descriptionBn": "বই, অডিও ও আর্কাইভের বিশাল সংগ্রহ।",
+  "descriptionEn": "Huge archive of books, audio and more."
+ },
+ {
+  "name": "Hardcover",
+  "url": "https://hardcover.app/docs/api",
+  "auth": "api_key",
+  "category": "books",
+  "descriptionBn": "বইয়ের তালিকা ও পড়ার তথ্য দেয়।",
+  "descriptionEn": "Book lists and reading data."
+ },
+ {
+  "name": "OpenAlex",
+  "url": "https://openalex.org/",
+  "auth": "none",
+  "category": "books",
+  "descriptionBn": "গবেষণাপত্র ও বইয়ের মুক্ত তথ্য দেয়।",
+  "descriptionEn": "Open data on papers and books."
+ },
+ {
+  "name": "Project Gutenberg",
+  "url": "https://www.gutenberg.org/",
+  "auth": "none",
+  "category": "books",
+  "descriptionBn": "বিনামূল্যে ক্লাসিক বইয়ের সংগ্রহ।",
+  "descriptionEn": "Free classic books collection."
+ },
+ {
+  "name": "OpenFDA",
+  "url": "https://open.fda.gov/apis/",
+  "auth": "none",
+  "category": "health",
+  "descriptionBn": "ওষুধ, খাবার ও যন্ত্রের সরকারি তথ্য দেয়।",
+  "descriptionEn": "Official FDA data on drugs, food and devices."
+ },
+ {
+  "name": "Nutritionix",
+  "url": "https://developer.nutritionix.com/",
+  "auth": "api_key",
+  "category": "health",
+  "descriptionBn": "খাবারের পুষ্টিগুণ ও ক্যালোরি দেয়।",
+  "descriptionEn": "Nutrition and calorie data for foods."
+ },
+ {
+  "name": "Disease.sh",
+  "url": "https://disease.sh/",
+  "auth": "none",
+  "category": "health",
+  "descriptionBn": "কোভিড ও রোগের পরিসংখ্যান দেয়।",
+  "descriptionEn": "COVID and disease statistics."
+ },
+ {
+  "name": "COVID-19 API",
+  "url": "https://covid19api.com/",
+  "auth": "none",
+  "category": "health",
+  "descriptionBn": "কোভিড-১৯ এর বৈশ্বিক পরিসংখ্যান দেয়।",
+  "descriptionEn": "Global COVID-19 statistics."
+ },
+ {
+  "name": "HealthCare.gov",
+  "url": "https://www.healthcare.gov/developers/",
+  "auth": "api_key",
+  "category": "health",
+  "descriptionBn": "যুক্তরাষ্ট্রের স্বাস্থ্য পরিকল্পনার তথ্য দেয়।",
+  "descriptionEn": "US health plan information."
+ },
+ {
+  "name": "NHS",
+  "url": "https://developer.api.nhs.uk/",
+  "auth": "api_key",
+  "category": "health",
+  "descriptionBn": "যুক্তরাজ্যের স্বাস্থ্যসেবার তথ্য দেয়।",
+  "descriptionEn": "UK health service information."
+ },
+ {
+  "name": "Open Targets",
+  "url": "https://platform-docs.opentargets.org/",
+  "auth": "none",
+  "category": "health",
+  "descriptionBn": "ওষুধের লক্ষ্য ও রোগের তথ্য দেয়।",
+  "descriptionEn": "Drug target and disease data."
+ },
+ {
+  "name": "RxNorm",
+  "url": "https://lhncbc.nlm.nih.gov/RxNav/APIs/",
+  "auth": "none",
+  "category": "health",
+  "descriptionBn": "ওষুধের নাম ও তথ্য দেয়।",
+  "descriptionEn": "Drug names and information."
+ },
+ {
+  "name": "ClinicalTrials.gov",
+  "url": "https://clinicaltrials.gov/api/",
+  "auth": "none",
+  "category": "health",
+  "descriptionBn": "চিকিৎসা গবেষণা পরীক্ষার তথ্য দেয়।",
+  "descriptionEn": "Clinical trial study data."
+ },
+ {
+  "name": "Medicare",
+  "url": "https://data.cms.gov/",
+  "auth": "none",
+  "category": "health",
+  "descriptionBn": "যুক্তরাষ্ট্রের মেডিকেয়ার তথ্য দেয়।",
+  "descriptionEn": "US Medicare data."
+ },
+ {
+  "name": "Arbeitnow",
+  "url": "https://www.arbeitnow.com/api",
+  "auth": "none",
+  "category": "jobs",
+  "descriptionBn": "ইউরোপের চাকরির তালিকা দেয়।",
+  "descriptionEn": "Job listings across Europe."
+ },
+ {
+  "name": "JSearch",
+  "url": "https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch",
+  "auth": "api_key",
+  "category": "jobs",
+  "descriptionBn": "বিশ্বজুড়ে চাকরি খোঁজে।",
+  "descriptionEn": "Searches jobs worldwide."
+ },
+ {
+  "name": "Reed",
+  "url": "https://www.reed.co.uk/developers",
+  "auth": "api_key",
+  "category": "jobs",
+  "descriptionBn": "যুক্তরাজ্যের চাকরির তালিকা দেয়।",
+  "descriptionEn": "UK job listings."
+ },
+ {
+  "name": "USAJobs",
+  "url": "https://developer.usajobs.gov/",
+  "auth": "api_key",
+  "category": "jobs",
+  "descriptionBn": "যুক্তরাষ্ট্রের সরকারি চাকরির তালিকা দেয়।",
+  "descriptionEn": "US federal government jobs."
+ },
+ {
+  "name": "Adzuna",
+  "url": "https://developer.adzuna.com/",
+  "auth": "api_key",
+  "category": "jobs",
+  "descriptionBn": "বিশ্বজুড়ে চাকরির বিজ্ঞাপন সংগ্রহ করে।",
+  "descriptionEn": "Job ads from around the world."
+ },
+ {
+  "name": "Jooble",
+  "url": "https://jooble.org/api/about",
+  "auth": "api_key",
+  "category": "jobs",
+  "descriptionBn": "চাকরি খোঁজার সার্চ ইঞ্জিন।",
+  "descriptionEn": "Job search engine."
+ },
+ {
+  "name": "The Muse",
+  "url": "https://www.themuse.com/developers/api/v2",
+  "auth": "api_key",
+  "category": "jobs",
+  "descriptionBn": "চাকরি ও কোম্পানির তথ্য দেয়।",
+  "descriptionEn": "Jobs and company data."
+ },
+ {
+  "name": "Remotive",
+  "url": "https://remotive.com/api",
+  "auth": "none",
+  "category": "jobs",
+  "descriptionBn": "রিমোট চাকরির তালিকা দেয়।",
+  "descriptionEn": "Remote job listings."
+ },
+ {
+  "name": "RemoteOK",
+  "url": "https://remoteok.com/api",
+  "auth": "none",
+  "category": "jobs",
+  "descriptionBn": "রিমোট চাকরি খোঁজার বোর্ড।",
+  "descriptionEn": "Remote job board."
+ },
+ {
+  "name": "Findwork",
+  "url": "https://findwork.dev/",
+  "auth": "api_key",
+  "category": "jobs",
+  "descriptionBn": "প্রযুক্তি চাকরির তালিকা দেয়।",
+  "descriptionEn": "Tech job listings."
+ },
+ {
+  "name": "NASA",
+  "url": "https://api.nasa.gov/",
+  "auth": "api_key",
+  "category": "science",
+  "descriptionBn": "নাসার ছবি, তথ্য ও মহাকাশের খবর দেয়।",
+  "descriptionEn": "NASA images, data and space info."
+ },
+ {
+  "name": "Crossref",
+  "url": "https://api.crossref.org/",
+  "auth": "none",
+  "category": "science",
+  "descriptionBn": "গবেষণাপত্রের তথ্য ও ডিওআই দেয়।",
+  "descriptionEn": "Research paper metadata and DOIs."
+ },
+ {
+  "name": "arXiv",
+  "url": "https://arxiv.org/help/api",
+  "auth": "none",
+  "category": "science",
+  "descriptionBn": "বিজ্ঞান গবেষণাপত্রের সংগ্রহ।",
+  "descriptionEn": "Science research paper archive."
+ },
+ {
+  "name": "PubMed",
+  "url": "https://www.ncbi.nlm.nih.gov/books/NBK25501/",
+  "auth": "none",
+  "category": "science",
+  "descriptionBn": "চিকিৎসা গবেষণাপত্র খোঁজে।",
+  "descriptionEn": "Searches medical research papers."
+ },
+ {
+  "name": "Europe PMC",
+  "url": "https://europepmc.org/docs/EBI_Europe_PMC_Web_Service_Reference",
+  "auth": "none",
+  "category": "science",
+  "descriptionBn": "ইউরোপের জীববিজ্ঞান গবেষণাপত্র দেয়।",
+  "descriptionEn": "European life-science papers."
+ },
+ {
+  "name": "SpaceX",
+  "url": "https://github.com/r-spacex/SpaceX-API",
+  "auth": "none",
+  "category": "science",
+  "descriptionBn": "স্পেসএক্সের উৎক্ষেপণ ও রকেটের তথ্য দেয়।",
+  "descriptionEn": "SpaceX launch and rocket data."
+ },
+ {
+  "name": "USGS Earthquake",
+  "url": "https://earthquake.usgs.gov/fdsnws/event/1/",
+  "auth": "none",
+  "category": "science",
+  "descriptionBn": "ভূমিকম্পের তথ্য দেয়।",
+  "descriptionEn": "Earthquake data."
+ },
+ {
+  "name": "GBIF",
+  "url": "https://www.gbif.org/developer/summary",
+  "auth": "none",
+  "category": "science",
+  "descriptionBn": "বিশ্বের জীববৈচিত্র্যের তথ্য দেয়।",
+  "descriptionEn": "World biodiversity data."
+ },
+ {
+  "name": "iNaturalist",
+  "url": "https://api.inaturalist.org/v1/docs/",
+  "auth": "none",
+  "category": "science",
+  "descriptionBn": "প্রাণী ও উদ্ভিদ পর্যবেক্ষণের তথ্য দেয়।",
+  "descriptionEn": "Wildlife observation data."
+ },
+ {
+  "name": "Wolfram Alpha",
+  "url": "https://products.wolframalpha.com/api",
+  "auth": "api_key",
+  "category": "science",
+  "descriptionBn": "গণনা ও জ্ঞানের উত্তর দেয়।",
+  "descriptionEn": "Computational knowledge answers."
+ },
+ {
+  "name": "TheSportsDB",
+  "url": "https://www.thesportsdb.com/api.php",
+  "auth": "api_key",
+  "category": "sports",
+  "descriptionBn": "খেলার দল, খেলোয়াড় ও স্কোর দেয়।",
+  "descriptionEn": "Teams, players and scores."
+ },
+ {
+  "name": "Football-Data.org",
+  "url": "https://www.football-data.org/",
+  "auth": "api_key",
+  "category": "sports",
+  "descriptionBn": "ফুটবল লিগের ফলাফল ও সূচি দেয়।",
+  "descriptionEn": "Football league results and fixtures."
+ },
+ {
+  "name": "API-Football",
+  "url": "https://www.api-football.com/",
+  "auth": "api_key",
+  "category": "sports",
+  "descriptionBn": "বিশ্বের ফুটবলের লাইভ তথ্য দেয়।",
+  "descriptionEn": "Live world football data."
+ },
+ {
+  "name": "Balldontlie",
+  "url": "https://www.balldontlie.io/",
+  "auth": "none",
+  "category": "sports",
+  "descriptionBn": "এনবিএ খেলার তথ্য দেয়।",
+  "descriptionEn": "NBA game data."
+ },
+ {
+  "name": "NHL",
+  "url": "https://github.com/dword4/nhlapi",
+  "auth": "none",
+  "category": "sports",
+  "descriptionBn": "আইস হকি লিগের তথ্য দেয়।",
+  "descriptionEn": "Ice hockey league data."
+ },
+ {
+  "name": "MLB Stats",
+  "url": "https://statsapi.mlb.com/",
+  "auth": "none",
+  "category": "sports",
+  "descriptionBn": "বেসবলের পরিসংখ্যান দেয়।",
+  "descriptionEn": "Baseball statistics."
+ },
+ {
+  "name": "OpenLigaDB",
+  "url": "https://www.openligadb.de/",
+  "auth": "none",
+  "category": "sports",
+  "descriptionBn": "জার্মান ফুটবল লিগের তথ্য দেয়।",
+  "descriptionEn": "German football league data."
+ },
+ {
+  "name": "Ergast F1",
+  "url": "https://ergast.com/mrd/",
+  "auth": "none",
+  "category": "sports",
+  "descriptionBn": "ফর্মুলা ১ রেসের ইতিহাস ও ফলাফল দেয়।",
+  "descriptionEn": "Formula 1 race history and results."
+ },
+ {
+  "name": "Cricket Data",
+  "url": "https://cricketdata.org/",
+  "auth": "api_key",
+  "category": "sports",
+  "descriptionBn": "ক্রিকেটের লাইভ স্কোর ও তথ্য দেয়।",
+  "descriptionEn": "Live cricket scores and data."
+ },
+ {
+  "name": "The Odds API",
+  "url": "https://the-odds-api.com/",
+  "auth": "api_key",
+  "category": "sports",
+  "descriptionBn": "খেলার বাজির অডস দেয়।",
+  "descriptionEn": "Sports betting odds."
+ },
+ {
+  "name": "TheMealDB",
+  "url": "https://www.themealdb.com/api.php",
+  "auth": "api_key",
+  "category": "food",
+  "descriptionBn": "খাবারের রেসিপি খোঁজে।",
+  "descriptionEn": "Searches meal recipes."
+ },
+ {
+  "name": "TheCocktailDB",
+  "url": "https://www.thecocktaildb.com/api.php",
+  "auth": "api_key",
+  "category": "food",
+  "descriptionBn": "ককটেলের রেসিপি দেয়।",
+  "descriptionEn": "Cocktail recipes."
+ },
+ {
+  "name": "Spoonacular",
+  "url": "https://spoonacular.com/food-api",
+  "auth": "api_key",
+  "category": "food",
+  "descriptionBn": "রেসিপি, পুষ্টি ও খাবার পরিকল্পনা দেয়।",
+  "descriptionEn": "Recipes, nutrition and meal planning."
+ },
+ {
+  "name": "Edamam",
+  "url": "https://developer.edamam.com/",
+  "auth": "api_key",
+  "category": "food",
+  "descriptionBn": "রেসিপি ও পুষ্টির তথ্য দেয়।",
+  "descriptionEn": "Recipe and nutrition data."
+ },
+ {
+  "name": "Open Food Facts",
+  "url": "https://world.openfoodfacts.org/data",
+  "auth": "none",
+  "category": "food",
+  "descriptionBn": "খাবারের পণ্যের তথ্যের মুক্ত ডেটাবেস।",
+  "descriptionEn": "Open database of food products."
+ },
+ {
+  "name": "Tasty",
+  "url": "https://rapidapi.com/apidojo/api/tasty",
+  "auth": "api_key",
+  "category": "food",
+  "descriptionBn": "টেস্টির রেসিপি ও ভিডিও দেয়।",
+  "descriptionEn": "Tasty recipes and videos."
+ },
+ {
+  "name": "Recipe Puppy",
+  "url": "https://www.recipepuppy.com/about/api/",
+  "auth": "none",
+  "category": "food",
+  "descriptionBn": "উপকরণ দিয়ে রেসিপি খোঁজে।",
+  "descriptionEn": "Finds recipes by ingredient."
+ },
+ {
+  "name": "USDA FoodData Central",
+  "url": "https://fdc.nal.usda.gov/api-guide.html",
+  "auth": "api_key",
+  "category": "food",
+  "descriptionBn": "যুক্তরাষ্ট্রের খাবারের পুষ্টিতথ্য দেয়।",
+  "descriptionEn": "US food nutrition data."
+ },
+ {
+  "name": "BreweryDB",
+  "url": "https://www.brewerydb.com/developers",
+  "auth": "api_key",
+  "category": "food",
+  "descriptionBn": "বিয়ার ও ব্রিউয়ারির তথ্য দেয়।",
+  "descriptionEn": "Beer and brewery data."
+ },
+ {
+  "name": "Coffee",
+  "url": "https://coffee.alexflipnote.dev/",
+  "auth": "none",
+  "category": "food",
+  "descriptionBn": "এলোমেলো কফির ছবি দেয়।",
+  "descriptionEn": "Random coffee images."
+ },
+ {
+  "name": "Spotify",
+  "url": "https://developer.spotify.com/documentation/web-api",
+  "auth": "oauth",
+  "category": "music",
+  "descriptionBn": "গান, শিল্পী ও প্লেলিস্টের তথ্য দেয়।",
+  "descriptionEn": "Songs, artists and playlists data."
+ },
+ {
+  "name": "Last.fm",
+  "url": "https://www.last.fm/api",
+  "auth": "api_key",
+  "category": "music",
+  "descriptionBn": "গান শোনার ইতিহাস ও তথ্য দেয়।",
+  "descriptionEn": "Listening history and music data."
+ },
+ {
+  "name": "MusicBrainz",
+  "url": "https://musicbrainz.org/doc/MusicBrainz_API",
+  "auth": "none",
+  "category": "music",
+  "descriptionBn": "গানের মুক্ত ডেটাবেস।",
+  "descriptionEn": "Open music database."
+ },
+ {
+  "name": "Deezer",
+  "url": "https://developers.deezer.com/api",
+  "auth": "none",
+  "category": "music",
+  "descriptionBn": "গান ও অ্যালবামের তথ্য দেয়।",
+  "descriptionEn": "Song and album data."
+ },
+ {
+  "name": "iTunes Search",
+  "url": "https://developer.apple.com/library/archive/documentation/AudioVideo/Conceptual/iTuneSearchAPI/",
+  "auth": "none",
+  "category": "music",
+  "descriptionBn": "অ্যাপলের গান ও মিডিয়া খোঁজে।",
+  "descriptionEn": "Searches Apple music and media."
+ },
+ {
+  "name": "Genius",
+  "url": "https://docs.genius.com/",
+  "auth": "oauth",
+  "category": "music",
+  "descriptionBn": "গানের কথা ও ব্যাখ্যা দেয়।",
+  "descriptionEn": "Song lyrics and meanings."
+ },
+ {
+  "name": "SoundCloud",
+  "url": "https://developers.soundcloud.com/docs/api/guide",
+  "auth": "oauth",
+  "category": "music",
+  "descriptionBn": "গান স্ট্রিম ও শেয়ারের তথ্য দেয়।",
+  "descriptionEn": "Music streaming and sharing data."
+ },
+ {
+  "name": "AudD",
+  "url": "https://audd.io/",
+  "auth": "api_key",
+  "category": "music",
+  "descriptionBn": "গান শনাক্ত করে।",
+  "descriptionEn": "Recognises songs."
+ },
+ {
+  "name": "Shazam",
+  "url": "https://rapidapi.com/apidojo/api/shazam",
+  "auth": "api_key",
+  "category": "music",
+  "descriptionBn": "গান শনাক্ত ও তথ্য দেয়।",
+  "descriptionEn": "Song recognition and data."
+ },
+ {
+  "name": "Radio Browser",
+  "url": "https://www.radio-browser.info/",
+  "auth": "none",
+  "category": "music",
+  "descriptionBn": "বিশ্বের ইন্টারনেট রেডিও স্টেশন দেয়।",
+  "descriptionEn": "Internet radio stations worldwide."
+ },
+ {
+  "name": "data.gov",
+  "url": "https://api.data.gov/",
+  "auth": "api_key",
+  "category": "government",
+  "descriptionBn": "যুক্তরাষ্ট্রের সরকারি মুক্ত তথ্য দেয়।",
+  "descriptionEn": "US government open data."
+ },
+ {
+  "name": "USAspending",
+  "url": "https://api.usaspending.gov/",
+  "auth": "none",
+  "category": "government",
+  "descriptionBn": "যুক্তরাষ্ট্রের সরকারি খরচের তথ্য দেয়।",
+  "descriptionEn": "US federal spending data."
+ },
+ {
+  "name": "Congress.gov",
+  "url": "https://api.congress.gov/",
+  "auth": "api_key",
+  "category": "government",
+  "descriptionBn": "মার্কিন কংগ্রেসের বিল ও ভোটের তথ্য দেয়।",
+  "descriptionEn": "US Congress bills and votes."
+ },
+ {
+  "name": "Open States",
+  "url": "https://openstates.org/",
+  "auth": "api_key",
+  "category": "government",
+  "descriptionBn": "যুক্তরাষ্ট্রের রাজ্য আইনসভার তথ্য দেয়।",
+  "descriptionEn": "US state legislature data."
+ },
+ {
+  "name": "UK Parliament",
+  "url": "https://api.parliament.uk/",
+  "auth": "none",
+  "category": "government",
+  "descriptionBn": "যুক্তরাজ্যের পার্লামেন্টের তথ্য দেয়।",
+  "descriptionEn": "UK Parliament data."
+ },
+ {
+  "name": "data.europa.eu",
+  "url": "https://data.europa.eu/en",
+  "auth": "none",
+  "category": "government",
+  "descriptionBn": "ইউরোপীয় ইউনিয়নের মুক্ত তথ্য দেয়।",
+  "descriptionEn": "European Union open data."
+ },
+ {
+  "name": "World Bank",
+  "url": "https://datahelpdesk.worldbank.org/knowledgebase/articles/889392-about-the-indicators-api-documentation",
+  "auth": "none",
+  "category": "government",
+  "descriptionBn": "বিশ্বব্যাংকের উন্নয়ন সূচক দেয়।",
+  "descriptionEn": "World Bank development indicators."
+ },
+ {
+  "name": "SEC EDGAR",
+  "url": "https://www.sec.gov/edgar/sec-api-documentation",
+  "auth": "none",
+  "category": "government",
+  "descriptionBn": "মার্কিন কোম্পানির আর্থিক ফাইলিং দেয়।",
+  "descriptionEn": "US company financial filings."
+ },
+ {
+  "name": "ProPublica Congress",
+  "url": "https://projects.propublica.org/api-docs/congress-api/",
+  "auth": "api_key",
+  "category": "government",
+  "descriptionBn": "মার্কিন কংগ্রেসের বিস্তারিত তথ্য দেয়।",
+  "descriptionEn": "Detailed US Congress data."
+ },
+ {
+  "name": "OpenFEC",
+  "url": "https://api.open.fec.gov/developers/",
+  "auth": "api_key",
+  "category": "government",
+  "descriptionBn": "মার্কিন নির্বাচনী অর্থায়নের তথ্য দেয়।",
+  "descriptionEn": "US campaign finance data."
+ },
+ {
+  "name": "OpenAI",
+  "url": "https://platform.openai.com/docs/api-reference",
+  "auth": "api_key",
+  "category": "ai-ml",
+  "descriptionBn": "চ্যাট, ছবি ও ভাষার এআই মডেল দেয়।",
+  "descriptionEn": "Chat, image and language AI models."
+ },
+ {
+  "name": "Google Gemini",
+  "url": "https://ai.google.dev/gemini-api/docs",
+  "auth": "api_key",
+  "category": "ai-ml",
+  "descriptionBn": "গুগলের জেমিনি এআই মডেল দেয়।",
+  "descriptionEn": "Google Gemini AI models."
+ },
+ {
+  "name": "Hugging Face",
+  "url": "https://huggingface.co/docs/api-inference/index",
+  "auth": "api_key",
+  "category": "ai-ml",
+  "descriptionBn": "হাজারো মুক্ত এআই মডেল চালায়।",
+  "descriptionEn": "Runs thousands of open AI models."
+ },
+ {
+  "name": "Groq",
+  "url": "https://console.groq.com/docs/quickstart",
+  "auth": "api_key",
+  "category": "ai-ml",
+  "descriptionBn": "দ্রুত এআই ইনফারেন্স দেয়।",
+  "descriptionEn": "Fast AI inference."
+ },
+ {
+  "name": "OpenRouter",
+  "url": "https://openrouter.ai/docs",
+  "auth": "api_key",
+  "category": "ai-ml",
+  "descriptionBn": "অনেক এআই মডেল এক জায়গায় দেয়।",
+  "descriptionEn": "Many AI models in one place."
+ },
+ {
+  "name": "Cohere",
+  "url": "https://docs.cohere.com/",
+  "auth": "api_key",
+  "category": "ai-ml",
+  "descriptionBn": "ভাষার এআই মডেল দেয়।",
+  "descriptionEn": "Language AI models."
+ },
+ {
+  "name": "Replicate",
+  "url": "https://replicate.com/docs",
+  "auth": "api_key",
+  "category": "ai-ml",
+  "descriptionBn": "ক্লাউডে এআই মডেল চালায়।",
+  "descriptionEn": "Runs AI models in the cloud."
+ },
+ {
+  "name": "Clarifai",
+  "url": "https://docs.clarifai.com/",
+  "auth": "api_key",
+  "category": "ai-ml",
+  "descriptionBn": "ছবি ও ভিডিও চেনার এআই দেয়।",
+  "descriptionEn": "Image and video recognition AI."
+ },
+ {
+  "name": "AssemblyAI",
+  "url": "https://www.assemblyai.com/docs",
+  "auth": "api_key",
+  "category": "ai-ml",
+  "descriptionBn": "অডিও থেকে লেখায় রূপান্তর করে।",
+  "descriptionEn": "Transcribes audio to text."
+ },
+ {
+  "name": "Roboflow",
+  "url": "https://docs.roboflow.com/",
+  "auth": "api_key",
+  "category": "ai-ml",
+  "descriptionBn": "কম্পিউটার ভিশন মডেল দেয়।",
+  "descriptionEn": "Computer vision models."
+ },
+ {
+  "name": "Dropbox",
+  "url": "https://www.dropbox.com/developers",
+  "auth": "oauth",
+  "category": "storage",
+  "descriptionBn": "ফাইল সংরক্ষণ ও শেয়ার করে।",
+  "descriptionEn": "Stores and shares files."
+ },
+ {
+  "name": "Google Drive",
+  "url": "https://developers.google.com/drive/api",
+  "auth": "oauth",
+  "category": "storage",
+  "descriptionBn": "গুগলের ফাইল সংরক্ষণ সেবা।",
+  "descriptionEn": "Google file storage service."
+ },
+ {
+  "name": "Box",
+  "url": "https://developer.box.com/",
+  "auth": "oauth",
+  "category": "storage",
+  "descriptionBn": "ব্যবসার ফাইল সংরক্ষণ ও শেয়ার করে।",
+  "descriptionEn": "Business file storage and sharing."
+ },
+ {
+  "name": "OneDrive",
+  "url": "https://learn.microsoft.com/en-us/onedrive/developer/",
+  "auth": "oauth",
+  "category": "storage",
+  "descriptionBn": "মাইক্রোসফটের ফাইল সংরক্ষণ সেবা।",
+  "descriptionEn": "Microsoft file storage service."
+ },
+ {
+  "name": "Cloudinary",
+  "url": "https://cloudinary.com/documentation",
+  "auth": "api_key",
+  "category": "storage",
+  "descriptionBn": "ছবি ও ভিডিও সংরক্ষণ ও অপ্টিমাইজ করে।",
+  "descriptionEn": "Stores and optimises images and videos."
+ },
+ {
+  "name": "Imgur",
+  "url": "https://apidocs.imgur.com/",
+  "auth": "oauth",
+  "category": "storage",
+  "descriptionBn": "ছবি আপলোড ও শেয়ার করে।",
+  "descriptionEn": "Uploads and shares images."
+ },
+ {
+  "name": "Pastebin",
+  "url": "https://pastebin.com/doc_api",
+  "auth": "api_key",
+  "category": "storage",
+  "descriptionBn": "লেখা সংরক্ষণ ও শেয়ার করে।",
+  "descriptionEn": "Stores and shares text snippets."
+ },
+ {
+  "name": "GitHub Gist",
+  "url": "https://docs.github.com/en/rest/gists",
+  "auth": "oauth",
+  "category": "storage",
+  "descriptionBn": "কোডের টুকরো সংরক্ষণ করে।",
+  "descriptionEn": "Stores code snippets."
+ },
+ {
+  "name": "Firebase Storage",
+  "url": "https://firebase.google.com/docs/storage",
+  "auth": "api_key",
+  "category": "storage",
+  "descriptionBn": "অ্যাপের ফাইল সংরক্ষণ করে।",
+  "descriptionEn": "Stores app files."
+ },
+ {
+  "name": "Storj",
+  "url": "https://docs.storj.io/",
+  "auth": "api_key",
+  "category": "storage",
+  "descriptionBn": "বিকেন্দ্রীভূত ফাইল সংরক্ষণ দেয়।",
+  "descriptionEn": "Decentralised file storage."
+ },
+ {
+  "name": "JokeAPI",
+  "url": "https://v2.jokeapi.dev/",
+  "auth": "none",
+  "category": "fun",
+  "descriptionBn": "মজার জোকস দেয়।",
+  "descriptionEn": "Serves jokes."
+ },
+ {
+  "name": "Chuck Norris",
+  "url": "https://api.chucknorris.io/",
+  "auth": "none",
+  "category": "fun",
+  "descriptionBn": "চাক নরিসের মজার জোকস দেয়।",
+  "descriptionEn": "Chuck Norris jokes."
+ },
+ {
+  "name": "Cat Facts",
+  "url": "https://catfact.ninja/",
+  "auth": "none",
+  "category": "fun",
+  "descriptionBn": "বিড়াল সম্পর্কে মজার তথ্য দেয়।",
+  "descriptionEn": "Fun facts about cats."
+ },
+ {
+  "name": "Dog CEO",
+  "url": "https://dog.ceo/dog-api/",
+  "auth": "none",
+  "category": "fun",
+  "descriptionBn": "কুকুরের এলোমেলো ছবি দেয়।",
+  "descriptionEn": "Random dog images."
+ },
+ {
+  "name": "RandomFox",
+  "url": "https://randomfox.ca/",
+  "auth": "none",
+  "category": "fun",
+  "descriptionBn": "শিয়ালের এলোমেলো ছবি দেয়।",
+  "descriptionEn": "Random fox images."
+ },
+ {
+  "name": "Bored API",
+  "url": "https://www.boredapi.com/",
+  "auth": "none",
+  "category": "fun",
+  "descriptionBn": "করার মতো মজার কাজের ধারণা দেয়।",
+  "descriptionEn": "Suggests fun things to do."
+ },
+ {
+  "name": "Numbers API",
+  "url": "https://numbersapi.com/",
+  "auth": "none",
+  "category": "fun",
+  "descriptionBn": "সংখ্যা সম্পর্কে মজার তথ্য দেয়।",
+  "descriptionEn": "Trivia about numbers."
+ },
+ {
+  "name": "Advice Slip",
+  "url": "https://api.adviceslip.com/",
+  "auth": "none",
+  "category": "fun",
+  "descriptionBn": "এলোমেলো উপদেশ দেয়।",
+  "descriptionEn": "Random advice slips."
+ },
+ {
+  "name": "Kanye Rest",
+  "url": "https://kanye.rest/",
+  "auth": "none",
+  "category": "fun",
+  "descriptionBn": "কানিয়ে ওয়েস্টের উক্তি দেয়।",
+  "descriptionEn": "Kanye West quotes."
+ },
+ {
+  "name": "PokéAPI",
+  "url": "https://pokeapi.co/",
+  "auth": "none",
+  "category": "fun",
+  "descriptionBn": "পোকেমনের তথ্য দেয়।",
+  "descriptionEn": "Pokémon data."
+ },
+ {
+  "name": "Free Dictionary",
+  "url": "https://dictionaryapi.dev/",
+  "auth": "none",
+  "category": "dictionary",
+  "descriptionBn": "বিনামূল্যে ইংরেজি অভিধান।",
+  "descriptionEn": "Free English dictionary."
+ },
+ {
+  "name": "Merriam-Webster",
+  "url": "https://dictionaryapi.com/",
+  "auth": "api_key",
+  "category": "dictionary",
+  "descriptionBn": "মেরিয়াম-ওয়েবস্টার অভিধান।",
+  "descriptionEn": "Merriam-Webster dictionary."
+ },
+ {
+  "name": "Oxford Dictionaries",
+  "url": "https://developer.oxforddictionaries.com/",
+  "auth": "api_key",
+  "category": "dictionary",
+  "descriptionBn": "অক্সফোর্ড অভিধানের তথ্য দেয়।",
+  "descriptionEn": "Oxford dictionary data."
+ },
+ {
+  "name": "WordsAPI",
+  "url": "https://www.wordsapi.com/",
+  "auth": "api_key",
+  "category": "dictionary",
+  "descriptionBn": "শব্দের অর্থ, প্রতিশব্দ ও উদাহরণ দেয়।",
+  "descriptionEn": "Word meanings, synonyms and examples."
+ },
+ {
+  "name": "Datamuse",
+  "url": "https://www.datamuse.com/api/",
+  "auth": "none",
+  "category": "dictionary",
+  "descriptionBn": "শব্দ খোঁজা ও ছড়ার সেবা।",
+  "descriptionEn": "Word-finding and rhyming service."
+ },
+ {
+  "name": "Urban Dictionary",
+  "url": "https://api.urbandictionary.com/v0/define",
+  "auth": "none",
+  "category": "dictionary",
+  "descriptionBn": "আধুনিক স্ল্যাং শব্দের অর্থ দেয়।",
+  "descriptionEn": "Modern slang definitions."
+ },
+ {
+  "name": "Wordnik",
+  "url": "https://developer.wordnik.com/",
+  "auth": "api_key",
+  "category": "dictionary",
+  "descriptionBn": "শব্দের অর্থ ও ব্যবহারের উদাহরণ দেয়।",
+  "descriptionEn": "Word meanings and usage examples."
+ },
+ {
+  "name": "Lingua Robot",
+  "url": "https://www.linguarobot.io/",
+  "auth": "api_key",
+  "category": "dictionary",
+  "descriptionBn": "শব্দের অর্থ ও ব্যাকরণ দেয়।",
+  "descriptionEn": "Word meanings and grammar."
+ },
+ {
+  "name": "Wiktionary",
+  "url": "https://en.wiktionary.org/w/api.php",
+  "auth": "none",
+  "category": "dictionary",
+  "descriptionBn": "মুক্ত অভিধান উইকশনারি।",
+  "descriptionEn": "Free dictionary Wiktionary."
+ },
+ {
+  "name": "Collins",
+  "url": "https://www.collinsdictionary.com/api",
+  "auth": "api_key",
+  "category": "dictionary",
+  "descriptionBn": "কলিন্স অভিধানের তথ্য দেয়।",
+  "descriptionEn": "Collins dictionary data."
+ },
+ {
+  "name": "ExchangeRate-API",
+  "url": "https://www.exchangerate-api.com/",
+  "auth": "api_key",
+  "category": "currency",
+  "descriptionBn": "মুদ্রার বিনিময় হার দেয়।",
+  "descriptionEn": "Currency exchange rates."
+ },
+ {
+  "name": "Frankfurter",
+  "url": "https://www.frankfurter.app/docs/",
+  "auth": "none",
+  "category": "currency",
+  "descriptionBn": "ইউরোপীয় কেন্দ্রীয় ব্যাংকের বিনিময় হার দেয়।",
+  "descriptionEn": "ECB exchange rates."
+ },
+ {
+  "name": "exchangerate.host",
+  "url": "https://exchangerate.host/",
+  "auth": "none",
+  "category": "currency",
+  "descriptionBn": "বিনামূল্যে মুদ্রার হার দেয়।",
+  "descriptionEn": "Free currency exchange rates."
+ },
+ {
+  "name": "CurrencyFreaks",
+  "url": "https://currencyfreaks.com/",
+  "auth": "api_key",
+  "category": "currency",
+  "descriptionBn": "বিশ্বের মুদ্রার হার দেয়।",
+  "descriptionEn": "World currency rates."
+ },
+ {
+  "name": "Fixer",
+  "url": "https://fixer.io/",
+  "auth": "api_key",
+  "category": "currency",
+  "descriptionBn": "বৈদেশিক মুদ্রার হার দেয়।",
+  "descriptionEn": "Foreign exchange rates."
+ },
+ {
+  "name": "CurrencyAPI",
+  "url": "https://currencyapi.com/",
+  "auth": "api_key",
+  "category": "currency",
+  "descriptionBn": "মুদ্রা রূপান্তরের হার দেয়।",
+  "descriptionEn": "Currency conversion rates."
+ },
+ {
+  "name": "Open Exchange Rates",
+  "url": "https://openexchangerates.org/",
+  "auth": "api_key",
+  "category": "currency",
+  "descriptionBn": "মুদ্রার হার ও রূপান্তর দেয়।",
+  "descriptionEn": "Exchange rates and conversion."
+ },
+ {
+  "name": "National Bank of Poland",
+  "url": "https://api.nbp.pl/",
+  "auth": "none",
+  "category": "currency",
+  "descriptionBn": "পোল্যান্ডের মুদ্রার হার দেয়।",
+  "descriptionEn": "Polish currency rates."
+ },
+ {
+  "name": "European Central Bank",
+  "url": "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml",
+  "auth": "none",
+  "category": "currency",
+  "descriptionBn": "ইউরোর দৈনিক রেফারেন্স হার দেয়।",
+  "descriptionEn": "Daily euro reference rates."
+ },
+ {
+  "name": "Wise",
+  "url": "https://docs.wise.com/",
+  "auth": "oauth",
+  "category": "currency",
+  "descriptionBn": "আন্তর্জাতিক টাকা পাঠানোর হার দেয়।",
+  "descriptionEn": "International transfer rates."
+ },
+ {
+  "name": "CoinGecko",
+  "url": "https://www.coingecko.com/en/api",
+  "auth": "none",
+  "category": "crypto",
+  "descriptionBn": "ক্রিপ্টোকারেন্সির দাম ও তথ্য দেয়।",
+  "descriptionEn": "Crypto prices and data."
+ },
+ {
+  "name": "CoinCap",
+  "url": "https://docs.coincap.io/",
+  "auth": "none",
+  "category": "crypto",
+  "descriptionBn": "ক্রিপ্টোর রিয়েল-টাইম দাম দেয়।",
+  "descriptionEn": "Real-time crypto prices."
+ },
+ {
+  "name": "Binance",
+  "url": "https://binance-docs.github.io/apidocs/",
+  "auth": "api_key",
+  "category": "crypto",
+  "descriptionBn": "বাইনান্স এক্সচেঞ্জের তথ্য দেয়।",
+  "descriptionEn": "Binance exchange data."
+ },
+ {
+  "name": "Coinbase",
+  "url": "https://docs.cloud.coinbase.com/exchange/docs",
+  "auth": "api_key",
+  "category": "crypto",
+  "descriptionBn": "কয়েনবেস এক্সচেঞ্জের তথ্য দেয়।",
+  "descriptionEn": "Coinbase exchange data."
+ },
+ {
+  "name": "Kraken",
+  "url": "https://docs.kraken.com/rest/",
+  "auth": "api_key",
+  "category": "crypto",
+  "descriptionBn": "ক্রাকেন এক্সচেঞ্জের তথ্য দেয়।",
+  "descriptionEn": "Kraken exchange data."
+ },
+ {
+  "name": "Blockchain.info",
+  "url": "https://www.blockchain.com/api",
+  "auth": "none",
+  "category": "crypto",
+  "descriptionBn": "বিটকয়েন ব্লকচেইনের তথ্য দেয়।",
+  "descriptionEn": "Bitcoin blockchain data."
+ },
+ {
+  "name": "CoinPaprika",
+  "url": "https://api.coinpaprika.com/",
+  "auth": "none",
+  "category": "crypto",
+  "descriptionBn": "ক্রিপ্টোর দাম ও তথ্য দেয়।",
+  "descriptionEn": "Crypto prices and data."
+ },
+ {
+  "name": "CryptoCompare",
+  "url": "https://min-api.cryptocompare.com/",
+  "auth": "api_key",
+  "category": "crypto",
+  "descriptionBn": "ক্রিপ্টোর দাম ও খবর দেয়।",
+  "descriptionEn": "Crypto prices and news."
+ },
+ {
+  "name": "CoinLore",
+  "url": "https://www.coinlore.com/cryptocurrency-data-api",
+  "auth": "none",
+  "category": "crypto",
+  "descriptionBn": "ক্রিপ্টোর দাম ও মার্কেট তথ্য দেয়।",
+  "descriptionEn": "Crypto prices and market data."
+ },
+ {
+  "name": "CoinDesk",
+  "url": "https://www.coindesk.com/coindesk-api",
+  "auth": "none",
+  "category": "crypto",
+  "descriptionBn": "ক্রিপ্টোর দাম সূচক ও খবর দেয়।",
+  "descriptionEn": "Crypto price index and news."
+ },
+ {
+  "name": "REST Countries",
+  "url": "https://restcountries.com/",
+  "auth": "none",
+  "category": "public-data",
+  "descriptionBn": "দেশের তথ্য (জনসংখ্যা, মুদ্রা, ভাষা) দেয়।",
+  "descriptionEn": "Country data (population, currency, language)."
+ },
+ {
+  "name": "JSONPlaceholder",
+  "url": "https://jsonplaceholder.typicode.com/",
+  "auth": "none",
+  "category": "public-data",
+  "descriptionBn": "পরীক্ষার জন্য ভুয়া ডেটা দেয়।",
+  "descriptionEn": "Fake data for testing."
+ },
+ {
+  "name": "Random User",
+  "url": "https://randomuser.me/",
+  "auth": "none",
+  "category": "public-data",
+  "descriptionBn": "এলোমেলো ব্যবহারকারীর তথ্য দেয়।",
+  "descriptionEn": "Random user profiles."
+ },
+ {
+  "name": "ReqRes",
+  "url": "https://reqres.in/",
+  "auth": "none",
+  "category": "public-data",
+  "descriptionBn": "পরীক্ষার জন্য ভুয়া রেস্ট এপিআই।",
+  "descriptionEn": "Fake REST API for testing."
+ },
+ {
+  "name": "Public APIs",
+  "url": "https://api.publicapis.org/",
+  "auth": "none",
+  "category": "public-data",
+  "descriptionBn": "মুক্ত এপিআইয়ের তালিকা দেয়।",
+  "descriptionEn": "Lists free public APIs."
+ },
+ {
+  "name": "IPinfo",
+  "url": "https://ipinfo.io/developers",
+  "auth": "api_key",
+  "category": "public-data",
+  "descriptionBn": "আইপি ঠিকানার অবস্থান দেয়।",
+  "descriptionEn": "IP address location data."
+ },
+ {
+  "name": "ipapi",
+  "url": "https://ipapi.com/",
+  "auth": "api_key",
+  "category": "public-data",
+  "descriptionBn": "আইপি থেকে অবস্থান ও তথ্য দেয়।",
+  "descriptionEn": "Location data from IP addresses."
+ },
+ {
+  "name": "Universities",
+  "url": "https://universities.hipolabs.com/",
+  "auth": "none",
+  "category": "public-data",
+  "descriptionBn": "বিশ্বের বিশ্ববিদ্যালয়ের তালিকা দেয়।",
+  "descriptionEn": "Lists universities worldwide."
+ },
+ {
+  "name": "Genderize",
+  "url": "https://genderize.io/",
+  "auth": "none",
+  "category": "public-data",
+  "descriptionBn": "নাম থেকে লিঙ্গ অনুমান করে।",
+  "descriptionEn": "Predicts gender from a name."
+ },
+ {
+  "name": "Agify",
+  "url": "https://agify.io/",
+  "auth": "none",
+  "category": "public-data",
+  "descriptionBn": "নাম থেকে বয়স অনুমান করে।",
+  "descriptionEn": "Predicts age from a name."
+ }
+]

@@ -1,0 +1,362 @@
+[
+ {
+  "name": "Railway",
+  "category": "hosting",
+  "freeTierEn": "Trial: $5 of usage credit for new accounts (trial, not a permanent free tier). After the credit, usage is paid.",
+  "freeTierBn": "ট্রায়াল: নতুন অ্যাকাউন্টে ৫ ডলার ব্যবহারের ক্রেডিট (ট্রায়াল, স্থায়ী ফ্রি টিয়ার নয়)। ক্রেডিট শেষ হলে ব্যবহারের জন্য টাকা লাগে।",
+  "needsCard": false,
+  "url": "https://railway.com/"
+ },
+ {
+  "name": "Render",
+  "category": "hosting",
+  "freeTierEn": "Free tier: free static sites and free web services (512 MB RAM, 0.1 CPU); free instances sleep after inactivity and spin down.",
+  "freeTierBn": "ফ্রি টিয়ার: ফ্রি স্ট্যাটিক সাইট ও ফ্রি ওয়েব সার্ভিস (৫১২ MB RAM, ০.১ CPU); ফ্রি ইনস্ট্যান্স নিষ্ক্রিয় থাকলে ঘুমিয়ে যায়।",
+  "needsCard": false,
+  "url": "https://render.com/"
+ },
+ {
+  "name": "Vercel",
+  "category": "hosting",
+  "freeTierEn": "Free (Hobby) tier: free static + serverless hosting for personal projects, 100 GB bandwidth/month; commercial use needs a paid plan.",
+  "freeTierBn": "ফ্রি (Hobby) টিয়ার: ব্যক্তিগত প্রজেক্টের জন্য ফ্রি স্ট্যাটিক + সার্ভারলেস হোস্টিং, মাসে ১০০ GB ব্যান্ডউইথ; বাণিজ্যিক ব্যবহারে পেইড প্ল্যান লাগে।",
+  "needsCard": false,
+  "url": "https://vercel.com/"
+ },
+ {
+  "name": "Netlify",
+  "category": "hosting",
+  "freeTierEn": "Free (Starter) tier: free static hosting, 100 GB bandwidth/month, 300 build minutes/month; serverless functions included with limits.",
+  "freeTierBn": "ফ্রি (Starter) টিয়ার: ফ্রি স্ট্যাটিক হোস্টিং, মাসে ১০০ GB ব্যান্ডউইথ, মাসে ৩০০ বিল্ড মিনিট; সীমাসহ সার্ভারলেস ফাংশন আছে।",
+  "needsCard": false,
+  "url": "https://www.netlify.com/"
+ },
+ {
+  "name": "Fly.io",
+  "category": "hosting",
+  "freeTierEn": "Free allowance: small shared-CPU machines with limited included usage; a card may be asked for at signup in some regions — check at signup.",
+  "freeTierBn": "ফ্রি ভাতা: সীমিত ব্যবহারসহ ছোট শেয়ার্ড-CPU মেশিন; কিছু অঞ্চলে সাইনআপে কার্ড চাইতে পারে — সাইনআপের সময় যাচাই করুন।",
+  "needsCard": false,
+  "url": "https://fly.io/"
+ },
+ {
+  "name": "Cloudflare Pages",
+  "category": "hosting",
+  "freeTierEn": "Free tier: unlimited free static sites, 500 builds/month, generous bandwidth; Workers free tier adds 100,000 requests/day.",
+  "freeTierBn": "ফ্রি টিয়ার: সীমাহীন ফ্রি স্ট্যাটিক সাইট, মাসে ৫০০ বিল্ড, উদার ব্যান্ডউইথ; Workers ফ্রি টিয়ারে দিনে ১,০০,০০০ অনুরোধ।",
+  "needsCard": false,
+  "url": "https://pages.cloudflare.com/"
+ },
+ {
+  "name": "Oracle Cloud Free Tier",
+  "category": "hosting",
+  "freeTierEn": "Always Free: 2 small AMD VMs + ARM Ampere instances, storage and databases included. A card IS required at signup (verification only).",
+  "freeTierBn": "Always Free: ২টি ছোট AMD VM + ARM Ampere ইনস্ট্যান্স, স্টোরেজ ও ডেটাবেসসহ। সাইনআপে কার্ড লাগবেই (শুধু যাচাইয়ের জন্য)।",
+  "needsCard": true,
+  "url": "https://www.oracle.com/cloud/free/"
+ },
+ {
+  "name": "AWS Free Tier",
+  "category": "hosting",
+  "freeTierEn": "Free Tier: 12 months of limited EC2/RDS/S3 usage for new accounts, plus some always-free limits. A card IS required at signup.",
+  "freeTierBn": "ফ্রি টিয়ার: নতুন অ্যাকাউন্টে ১২ মাস সীমিত EC2/RDS/S3 ব্যবহার, সঙ্গে কিছু সবসময়-ফ্রি সীমা। সাইনআপে কার্ড লাগবেই।",
+  "needsCard": true,
+  "url": "https://aws.amazon.com/free/"
+ },
+ {
+  "name": "Supabase",
+  "category": "database",
+  "freeTierEn": "Free tier: hosted Postgres (500 MB), Auth, Storage (1 GB) and Edge Functions; free projects pause after 1 week of inactivity.",
+  "freeTierBn": "ফ্রি টিয়ার: হোস্টেড Postgres (৫০০ MB), Auth, Storage (১ GB) ও Edge Functions; ১ সপ্তাহ নিষ্ক্রিয় থাকলে ফ্রি প্রজেক্ট থেমে যায়।",
+  "needsCard": false,
+  "url": "https://supabase.com/"
+ },
+ {
+  "name": "Neon",
+  "category": "database",
+  "freeTierEn": "Free tier: serverless Postgres, 0.25 GB storage per project, one project; compute scales to zero when idle.",
+  "freeTierBn": "ফ্রি টিয়ার: সার্ভারলেস Postgres, প্রতি প্রজেক্টে ০.২৫ GB স্টোরেজ, একটি প্রজেক্ট; নিষ্ক্রিয় থাকলে কম্পিউট শূন্যে নেমে আসে।",
+  "needsCard": false,
+  "url": "https://neon.tech/"
+ },
+ {
+  "name": "Turso",
+  "category": "database",
+  "freeTierEn": "Free tier: libSQL/SQLite at the edge, 9 GB total storage, 500 databases, 500 million rows read/month.",
+  "freeTierBn": "ফ্রি টিয়ার: এজে libSQL/SQLite, মোট ৯ GB স্টোরেজ, ৫০০ ডেটাবেস, মাসে ৫০ কোটি রো পড়া।",
+  "needsCard": false,
+  "url": "https://turso.tech/"
+ },
+ {
+  "name": "Upstash",
+  "category": "database",
+  "freeTierEn": "Free tier: serverless Redis and Kafka with a daily request allowance (10,000 commands/day for Redis); no card needed.",
+  "freeTierBn": "ফ্রি টিয়ার: সার্ভারলেস Redis ও Kafka, দৈনিক অনুরোধের ভাতাসহ (Redis-এ দিনে ১০,০০০ কমান্ড); কার্ড লাগে না।",
+  "needsCard": false,
+  "url": "https://upstash.com/"
+ },
+ {
+  "name": "MongoDB Atlas",
+  "category": "database",
+  "freeTierEn": "Free tier (M0): 512 MB storage, shared cluster, for learning and small apps; no card needed for the free cluster.",
+  "freeTierBn": "ফ্রি টিয়ার (M0): ৫১২ MB স্টোরেজ, শেয়ার্ড ক্লাস্টার, শেখা ও ছোট অ্যাপের জন্য; ফ্রি ক্লাস্টারে কার্ড লাগে না।",
+  "needsCard": false,
+  "url": "https://www.mongodb.com/atlas"
+ },
+ {
+  "name": "Firebase (Spark plan)",
+  "category": "database",
+  "freeTierEn": "Spark (free) plan: Firestore (1 GB stored, 50k reads/day), Realtime Database, Auth and Cloud Functions with generous free quotas.",
+  "freeTierBn": "Spark (ফ্রি) প্ল্যান: Firestore (১ GB সংরক্ষণ, দিনে ৫০ হাজার পড়া), Realtime Database, Auth ও Cloud Functions — উদার ফ্রি কোটাসহ।",
+  "needsCard": false,
+  "url": "https://firebase.google.com/pricing"
+ },
+ {
+  "name": "Appwrite",
+  "category": "database",
+  "freeTierEn": "Free tier (Cloud Starter): hosted backend with database, Auth, Storage and Functions; generous free quotas for small apps.",
+  "freeTierBn": "ফ্রি টিয়ার (Cloud Starter): ডেটাবেস, Auth, Storage ও Functions-সহ হোস্টেড ব্যাকএন্ড; ছোট অ্যাপের জন্য উদার ফ্রি কোটা।",
+  "needsCard": false,
+  "url": "https://appwrite.io/"
+ },
+ {
+  "name": "Resend",
+  "category": "email",
+  "freeTierEn": "Free tier: 100 emails/day, 3,000 emails/month, one domain; sending to your own address works without a custom domain.",
+  "freeTierBn": "ফ্রি টিয়ার: দিনে ১০০টি ইমেইল, মাসে ৩,০০০টি ইমেইল, একটি ডোমেইন; কাস্টম ডোমেইন ছাড়াই নিজের ঠিকানায় পাঠানো যায়।",
+  "needsCard": false,
+  "url": "https://resend.com/"
+ },
+ {
+  "name": "Brevo",
+  "category": "email",
+  "freeTierEn": "Free tier: 300 emails/day, unlimited contacts; transactional + marketing email included, with daily (not monthly) cap.",
+  "freeTierBn": "ফ্রি টিয়ার: দিনে ৩০০টি ইমেইল, সীমাহীন কন্ট্যাক্ট; ট্রানজাকশনাল + মার্কেটিং ইমেইল আছে, দৈনিক (মাসিক নয়) সীমাসহ।",
+  "needsCard": false,
+  "url": "https://www.brevo.com/"
+ },
+ {
+  "name": "Mailgun",
+  "category": "email",
+  "freeTierEn": "Trial: 3-month trial with 100 emails/day on the Flex trial; after the trial it is pay-as-you-go — this is a trial, not a permanent free tier.",
+  "freeTierBn": "ট্রায়াল: Flex ট্রায়ালে ৩ মাস, দিনে ১০০টি ইমেইল; ট্রায়াল শেষে পে-অ্যাজ-ইউ-গো — এটি ট্রায়াল, স্থায়ী ফ্রি টিয়ার নয়।",
+  "needsCard": false,
+  "url": "https://www.mailgun.com/"
+ },
+ {
+  "name": "SendGrid",
+  "category": "email",
+  "freeTierEn": "Free tier: 100 emails/day free (forever free allowance); deliverability and API access included.",
+  "freeTierBn": "ফ্রি টিয়ার: দিনে ১০০টি ইমেইল ফ্রি (সবসময়ের ফ্রি ভাতা); ডেলিভারেবিলিটি ও API অ্যাক্সেস আছে।",
+  "needsCard": false,
+  "url": "https://sendgrid.com/"
+ },
+ {
+  "name": "Mailjet",
+  "category": "email",
+  "freeTierEn": "Free tier: 200 emails/day (6,000/month), unlimited contacts; SMTP + API included.",
+  "freeTierBn": "ফ্রি টিয়ার: দিনে ২০০টি ইমেইল (মাসে ৬,০০০), সীমাহীন কন্ট্যাক্ট; SMTP + API আছে।",
+  "needsCard": false,
+  "url": "https://www.mailjet.com/"
+ },
+ {
+  "name": "Cloudflare R2",
+  "category": "storage",
+  "freeTierEn": "Free tier: 10 GB object storage/month with no egress fees; billing setup may ask for a card in some accounts — check at signup.",
+  "freeTierBn": "ফ্রি টিয়ার: মাসে ১০ GB অবজেক্ট স্টোরেজ, কোনো ইগ্রেস ফি নেই; কিছু অ্যাকাউন্টে বিলিং সেটআপে কার্ড চাইতে পারে — সাইনআপে যাচাই করুন।",
+  "needsCard": false,
+  "url": "https://www.cloudflare.com/developer-platform/r2/"
+ },
+ {
+  "name": "Backblaze B2",
+  "category": "storage",
+  "freeTierEn": "Free tier: 10 GB storage free, plus free egress up to 3x stored data via Cloudflare Bandwidth Alliance; pay only past the free allowance.",
+  "freeTierBn": "ফ্রি টিয়ার: ১০ GB স্টোরেজ ফ্রি, Cloudflare Bandwidth Alliance-এ সংরক্ষিত ডেটার ৩ গুণ পর্যন্ত ফ্রি ইগ্রেস; ফ্রি ভাতার পরে টাকা লাগে।",
+  "needsCard": false,
+  "url": "https://www.backblaze.com/cloud-storage/"
+ },
+ {
+  "name": "Cloudinary",
+  "category": "storage",
+  "freeTierEn": "Free tier: 25 GB storage + 25 GB bandwidth/month for images and video, with transformation and optimisation included.",
+  "freeTierBn": "ফ্রি টিয়ার: ছবি ও ভিডিওর জন্য মাসে ২৫ GB স্টোরেজ + ২৫ GB ব্যান্ডউইথ, ট্রান্সফরমেশন ও অপটিমাইজেশনসহ।",
+  "needsCard": false,
+  "url": "https://cloudinary.com/"
+ },
+ {
+  "name": "Firebase Storage (Spark)",
+  "category": "storage",
+  "freeTierEn": "Spark (free) plan: 5 GB stored, 1 GB/day downloads, 20k uploads/day and 50k downloads/day.",
+  "freeTierBn": "Spark (ফ্রি) প্ল্যান: ৫ GB সংরক্ষণ, দিনে ১ GB ডাউনলোড, দিনে ২০ হাজার আপলোড ও ৫০ হাজার ডাউনলোড।",
+  "needsCard": false,
+  "url": "https://firebase.google.com/pricing"
+ },
+ {
+  "name": "UptimeRobot",
+  "category": "monitoring",
+  "freeTierEn": "Free tier: 50 monitors, 5-minute checks, status pages; email alerts included.",
+  "freeTierBn": "ফ্রি টিয়ার: ৫০টি মনিটর, ৫ মিনিটের চেক, স্ট্যাটাস পেজ; ইমেইল অ্যালার্ট আছে।",
+  "needsCard": false,
+  "url": "https://uptimerobot.com/"
+ },
+ {
+  "name": "Sentry",
+  "category": "monitoring",
+  "freeTierEn": "Free tier: 5,000 errors/month, 10k performance spans and 1 GB attachments; error tracking for mobile + web.",
+  "freeTierBn": "ফ্রি টিয়ার: মাসে ৫,০০০টি এরর, ১০ হাজার পারফরম্যান্স স্প্যান ও ১ GB অ্যাটাচমেন্ট; মোবাইল + ওয়েবের এরর ট্র্যাকিং।",
+  "needsCard": false,
+  "url": "https://sentry.io/"
+ },
+ {
+  "name": "PostHog",
+  "category": "monitoring",
+  "freeTierEn": "Free tier: 1 million events/month free, plus product analytics, session replay and feature flags on the free allowance.",
+  "freeTierBn": "ফ্রি টিয়ার: মাসে ১০ লাখ ইভেন্ট ফ্রি, সঙ্গে প্রোডাক্ট অ্যানালিটিক্স, সেশন রিপ্লে ও ফিচার ফ্ল্যাগ ফ্রি ভাতায়।",
+  "needsCard": false,
+  "url": "https://posthog.com/"
+ },
+ {
+  "name": "Better Stack",
+  "category": "monitoring",
+  "freeTierEn": "Free tier: 10 monitors with 3-minute checks, 1 status page, plus log management on a small free allowance.",
+  "freeTierBn": "ফ্রি টিয়ার: ৩ মিনিটের চেকসহ ১০টি মনিটর, ১টি স্ট্যাটাস পেজ, সঙ্গে ছোট ফ্রি ভাতায় লগ ম্যানেজমেন্ট।",
+  "needsCard": false,
+  "url": "https://betterstack.com/"
+ },
+ {
+  "name": "Grafana Cloud",
+  "category": "monitoring",
+  "freeTierEn": "Free tier: 10k metrics series, 50 GB logs, 50 GB traces and 14-day retention — generous always-free observability.",
+  "freeTierBn": "ফ্রি টিয়ার: ১০ হাজার মেট্রিক সিরিজ, ৫০ GB লগ, ৫০ GB ট্রেস ও ১৪ দিনের সংরক্ষণ — উদার সবসময়-ফ্রি অবজারভেবিলিটি।",
+  "needsCard": false,
+  "url": "https://grafana.com/products/cloud/"
+ },
+ {
+  "name": "Google AI Studio (Gemini)",
+  "category": "ai",
+  "freeTierEn": "Free tier: Gemini API with a free per-minute / per-day quota (e.g. Gemini Flash); free API key from AI Studio, no card needed.",
+  "freeTierBn": "ফ্রি টিয়ার: Gemini API — প্রতি মিনিট / প্রতি দিনের ফ্রি কোটাসহ (যেমন Gemini Flash); AI Studio থেকে ফ্রি API কী, কার্ড লাগে না।",
+  "needsCard": false,
+  "url": "https://aistudio.google.com/"
+ },
+ {
+  "name": "Groq Cloud",
+  "category": "ai",
+  "freeTierEn": "Free tier: very fast LLM inference with free rate limits (requests + tokens per minute/day) on open models; free API key, no card needed.",
+  "freeTierBn": "ফ্রি টিয়ার: ওপেন মডেলে খুব দ্রুত LLM ইনফারেন্স, ফ্রি হারের সীমাসহ (প্রতি মিনিট/দিনে অনুরোধ + টোকেন); ফ্রি API কী, কার্ড লাগে না।",
+  "needsCard": false,
+  "url": "https://console.groq.com/"
+ },
+ {
+  "name": "OpenRouter",
+  "category": "ai",
+  "freeTierEn": "Free tier: free models (marked :free) with a free daily allowance; no card needed. Paid models are billed separately — Nexus uses the free ones only.",
+  "freeTierBn": "ফ্রি টিয়ার: ফ্রি মডেল (:free চিহ্নিত) দৈনিক ফ্রি ভাতাসহ; কার্ড লাগে না। পেইড মডেল আলাদা বিল হয় — Nexus শুধু ফ্রি মডেল ব্যবহার করে।",
+  "needsCard": false,
+  "url": "registry:OPENROUTER"
+ },
+ {
+  "name": "Hugging Face Inference",
+  "category": "ai",
+  "freeTierEn": "Free tier: serverless Inference API with a free monthly credit allowance on many open models; free token, no card needed.",
+  "freeTierBn": "ফ্রি টিয়ার: সার্ভারলেস Inference API — অনেক ওপেন মডেলে মাসিক ফ্রি ক্রেডিট ভাতা; ফ্রি টোকেন, কার্ড লাগে না।",
+  "needsCard": false,
+  "url": "https://huggingface.co/"
+ },
+ {
+  "name": "Together AI",
+  "category": "ai",
+  "freeTierEn": "Free tier: $25 of free credit for new accounts to try open models via API; after the credit it is pay-as-you-go.",
+  "freeTierBn": "ফ্রি টিয়ার: নতুন অ্যাকাউন্টে API-তে ওপেন মডেল চেষ্টা করতে ২৫ ডলার ফ্রি ক্রেডিট; ক্রেডিট শেষে পে-অ্যাজ-ইউ-গো।",
+  "needsCard": false,
+  "url": "https://www.together.ai/"
+ },
+ {
+  "name": "Mistral AI (La Plateforme)",
+  "category": "ai",
+  "freeTierEn": "Free tier: free experimental API access with rate limits on small Mistral models; free API key, no card needed for the free tier.",
+  "freeTierBn": "ফ্রি টিয়ার: ছোট Mistral মডেলে হারের সীমাসহ ফ্রি পরীক্ষামূলক API অ্যাক্সেস; ফ্রি API কী, ফ্রি টিয়ারে কার্ড লাগে না।",
+  "needsCard": false,
+  "url": "https://console.mistral.ai/"
+ },
+ {
+  "name": "Cohere",
+  "category": "ai",
+  "freeTierEn": "Free tier: trial API key with free monthly usage for chat, embed and rerank models; no card needed for the trial key.",
+  "freeTierBn": "ফ্রি টিয়ার: চ্যাট, এমবেড ও রির‍্যাংক মডেলের জন্য মাসিক ফ্রি ব্যবহারসহ ট্রায়াল API কী; ট্রায়াল কী-তে কার্ড লাগে না।",
+  "needsCard": false,
+  "url": "https://cohere.com/"
+ },
+ {
+  "name": "Replicate",
+  "category": "ai",
+  "freeTierEn": "Trial credit: new accounts get a small free credit to try hosted open models (image, audio, LLM); after the credit it is pay-as-you-go.",
+  "freeTierBn": "ট্রায়াল ক্রেডিট: নতুন অ্যাকাউন্টে হোস্টেড ওপেন মডেল (ছবি, অডিও, LLM) চেষ্টা করতে ছোট ফ্রি ক্রেডিট; ক্রেডিট শেষে পে-অ্যাজ-ইউ-গো।",
+  "needsCard": false,
+  "url": "https://replicate.com/"
+ },
+ {
+  "name": "OpenStreetMap (Nominatim)",
+  "category": "maps",
+  "freeTierEn": "Free: community map data and Nominatim geocoding/search, free with fair-use limits (1 request/second, no bulk use); no key, no card.",
+  "freeTierBn": "ফ্রি: কমিউনিটি মানচিত্রের ডেটা ও Nominatim জিওকোডিং/সার্চ, ন্যায্য ব্যবহারের সীমাসহ (সেকেন্ডে ১টি অনুরোধ, বাল্ক ব্যবহার নয়); কী বা কার্ড লাগে না।",
+  "needsCard": false,
+  "url": "https://www.openstreetmap.org/"
+ },
+ {
+  "name": "Mapbox",
+  "category": "maps",
+  "freeTierEn": "Free tier: 50,000 map loads/month and 100,000 geocoding requests/month free; free token, no card needed.",
+  "freeTierBn": "ফ্রি টিয়ার: মাসে ৫০,০০০ মানচিত্র লোড ও ১,০০,০০০ জিওকোডিং অনুরোধ ফ্রি; ফ্রি টোকেন, কার্ড লাগে না।",
+  "needsCard": false,
+  "url": "https://www.mapbox.com/"
+ },
+ {
+  "name": "Google Maps Platform",
+  "category": "maps",
+  "freeTierEn": "$200/month of free credit for Maps, Places and Routes; a card IS required (billing must be enabled) even though the first $200 is free.",
+  "freeTierBn": "Maps, Places ও Routes-এর জন্য মাসে ২০০ ডলার ফ্রি ক্রেডিট; প্রথম ২০০ ডলার ফ্রি হলেও কার্ড লাগবেই (বিলিং চালু করতে হয়)।",
+  "needsCard": true,
+  "url": "https://mapsplatform.google.com/"
+ },
+ {
+  "name": "TomTom",
+  "category": "maps",
+  "freeTierEn": "Free tier: 2,500 free transactions/day for Maps, Search and Routing APIs; free API key, no card needed.",
+  "freeTierBn": "ফ্রি টিয়ার: Maps, Search ও Routing API-তে দিনে ২,৫০০টি ফ্রি ট্রানজাকশন; ফ্রি API কী, কার্ড লাগে না।",
+  "needsCard": false,
+  "url": "https://developer.tomtom.com/"
+ },
+ {
+  "name": "Firebase Authentication",
+  "category": "auth",
+  "freeTierEn": "Spark (free) plan: email/password, Google and phone sign-in free; phone auth has a small free quota (10 verifications/day).",
+  "freeTierBn": "Spark (ফ্রি) প্ল্যান: ইমেইল/পাসওয়ার্ড, Google ও ফোন সাইন-ইন ফ্রি; ফোন অথে ছোট ফ্রি কোটা আছে (দিনে ১০টি যাচাই)।",
+  "needsCard": false,
+  "url": "https://firebase.google.com/products/auth"
+ },
+ {
+  "name": "Supabase Auth",
+  "category": "auth",
+  "freeTierEn": "Free tier: email, OAuth (Google, GitHub and more) and magic-link sign-in free, included with the Supabase free project.",
+  "freeTierBn": "ফ্রি টিয়ার: ইমেইল, OAuth (Google, GitHub সহ আরও) ও ম্যাজিক-লিংক সাইন-ইন ফ্রি, Supabase ফ্রি প্রজেক্টের সঙ্গেই আছে।",
+  "needsCard": false,
+  "url": "https://supabase.com/auth"
+ },
+ {
+  "name": "Clerk",
+  "category": "auth",
+  "freeTierEn": "Free tier: 10,000 monthly active users free, with email, OAuth and passkeys; no card needed.",
+  "freeTierBn": "ফ্রি টিয়ার: মাসে ১০,০০০ সক্রিয় ব্যবহারকারী ফ্রি, ইমেইল, OAuth ও পাসকিসহ; কার্ড লাগে না।",
+  "needsCard": false,
+  "url": "https://clerk.com/"
+ },
+ {
+  "name": "Auth0",
+  "category": "auth",
+  "freeTierEn": "Free tier: 25,000 monthly active users free, with social logins and passwordless; no card needed for the free plan.",
+  "freeTierBn": "ফ্রি টিয়ার: মাসে ২৫,০০০ সক্রিয় ব্যবহারকারী ফ্রি, সোশ্যাল লগইন ও পাসওয়ার্ডলেসসহ; ফ্রি প্ল্যানে কার্ড লাগে না।",
+  "needsCard": false,
+  "url": "https://auth0.com/"
+ }
+]

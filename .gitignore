@@ -1,0 +1,15 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+# Server-side key store + sticky-key state (may contain key material)
+.secrets.json
+.nexus_sticky_key.json
+# Server-side runtime data: GitHub token store (encrypted), model catalog,
+# Nexus store (goals/reminders/watches), user memory + chat history.
+# Render free has ephemeral disk — back up via GET /api/backup.
+data/

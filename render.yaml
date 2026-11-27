@@ -1,0 +1,96 @@
+services:
+  - type: web
+    name: website-builder-agent
+    runtime: node
+    plan: free
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npx tsx server.ts
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DISABLE_HMR
+        value: "true"
+      # MERGE (2026-11-27): ONE service — the FreeLLMAPI-compatible router
+      # is EMBEDDED in this service (server/router/, same port, /v1/*).
+      # FREE_LLM_API_URL / FREE_LLM_API_KEY are OPTIONAL overrides for an
+      # external FreeLLMAPI; leave them unset to use the embedded router.
+      # The router's own /v1 key: ROUTER_API_KEY (optional — when unset, a
+      # random key is generated at boot and held in memory only).
+      - key: ROUTER_API_KEY
+        sync: false
+      - key: FREE_LLM_API_URL
+        sync: false
+      - key: FREE_LLM_API_KEY
+        sync: false
+      - key: FREE_LLM_API_MODEL
+        value: auto:balanced
+      # Optional fallback: direct Gemini keys (free tier). Leave unset to
+      # run FreeLLMAPI-only. GEMINI_API_KEYS = comma-separated list, one key
+      # per Google Cloud project (the user has 10, each its own project, so
+      # each carries its own Hydrogen quota). GEMINI_API_KEY = legacy single key.
+      - key: GEMINI_API_KEYS
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      # Groq (11 keys, per-org caps) + OpenRouter (8 keys, 50 free req/day
+      # shared pool) — same env-list pattern, same never-in-code rule.
+      - key: GROQ_API_KEYS
+        sync: false
+      - key: OPENROUTER_API_KEYS
+        sync: false
+      # Per-task model chains (optional overrides; verified live, never assumed).
+      - key: FREE_LLM_API_MODEL_CODING
+        sync: false
+      - key: FREE_LLM_API_MODEL_PLANNING
+        sync: false
+      - key: FREE_LLM_API_MODEL_CHAT
+        sync: false
+      - key: FREE_LLM_API_MODEL_CHEAP
+        sync: false
+      - key: FREE_LLM_API_ROUTING
+        sync: false
+      # GitHub one-click connect (OAuth App, one-time setup) + PAT fallback.
+      - key: GITHUB_OAUTH_CLIENT_ID
+        sync: false
+      - key: GITHUB_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_TOKEN_ENCRYPTION_KEY
+        sync: false
+      # One-click deploy: Render Deploy Hook URL (paste after creating the
+      # static site from the repo once) + optional API key for live status.
+      - key: RENDER_DEPLOY_HOOK_URL
+        sync: false
+      - key: RENDER_API_KEY
+        sync: false
+      - key: RENDER_SERVICE_ID
+        sync: false
+      - key: RENDER_SERVICE_URL
+        sync: false
+      # Browser worker (Nexus's existing worker).
+      - key: BROWSER_WORKER_URL
+        sync: false
+      - key: BROWSER_WORKER_KEY
+        sync: false
+      - key: BROWSER_WORKER_URL2
+        sync: false
+      # Firebase one-click: encrypted config key + optional Hosting token.
+      # FIREBASE_TOKEN: one-time `npx firebase-tools login:ci` output; only
+      # needed for Deploy to Firebase Hosting. The Firebase config itself is
+      # pasted once in the UI (Connect Firebase) — never an env var here.
+      - key: FIREBASE_CONFIG_ENCRYPTION_KEY
+        sync: false
+      - key: FIREBASE_TOKEN
+        sync: false
+      # Google APIs (Gmail/Calendar/Drive/Docs) via OAuth refresh token.
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_REFRESH_TOKEN
+        sync: false
+      - key: APP_URL
+        sync: false

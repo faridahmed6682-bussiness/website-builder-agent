@@ -1,0 +1,13 @@
+{
+  "name": "Nexus AI",
+  "description": "Production-ready full-stack AI coding studio & website builder with 25 specialized skills, autonomous engineering pipeline, and real-time live canvas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API",
+    "AI Website Builder",
+    "Image Generation",
+    "Full-Stack Assistant",
+    "Autonomous Engineering Pipeline",
+    "25 Coding Skills & Tool Harness"
+  ]
+}
