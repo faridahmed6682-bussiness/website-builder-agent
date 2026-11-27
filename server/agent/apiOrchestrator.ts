@@ -1433,6 +1433,16 @@ const PLAN_TOOLS = new Set(['omo_coordinate', 'ask_question', 'plan', 'read_skil
 // Short-brief discipline: tool results are truncated to this many chars
 // before entering model context (override with TOOL_RESULT_MAX_CHARS).
 const TOOL_RESULT_MAX_CHARS = Number(process.env.TOOL_RESULT_MAX_CHARS || 3000);
+// STEP 10 (P1): per-round output cap for the two main agent loops —
+// buildPayload (OpenAI-compatible path) sets max_tokens and the Gemini
+// loop sets maxOutputTokens. One round must be able to emit a whole
+// single-file site (~30 KB of code ≈ 8k tokens), so the default is 8192;
+// the 16-round worst case is then bounded at 16 × 8192 ≈ 131k output
+// tokens per turn instead of unbounded. Override with
+// AGENT_LOOP_MAX_OUTPUT_TOKENS (e.g. lower it for a provider whose free
+// models cap completion below 8192).
+const _loopMaxOut = Number(process.env.AGENT_LOOP_MAX_OUTPUT_TOKENS || 8192);
+const AGENT_LOOP_MAX_OUTPUT_TOKENS = Number.isFinite(_loopMaxOut) && _loopMaxOut > 0 ? Math.floor(_loopMaxOut) : 8192;
 // Max repair rounds shared by the verify-then-fix loop and the reviewer pass.
 const MAX_REPAIR_ROUNDS = 2;
 // FreeLLMAPI auto strategies to rotate through when the router errors.
@@ -1540,7 +1550,10 @@ async function runReviewerPass(
 }
 
 // Stream chat with OpenAI-compatible endpoints (OpenRouter, Groq, Cerebras, Mistral, Grok, Custom) WITH full tool-calling + text-tool fallback loop
-async function streamOpenAICompatible(
+// Exported for the keyless proof (scripts/step10-max-tokens-proof.mts),
+// which drives the loop with a stubbed fetch and records the request
+// payloads — same pattern as runGeminiAgentLoop below.
+export async function streamOpenAICompatible(
   endpoint: string,
   apiKey: string,
   model: string,
@@ -1666,6 +1679,8 @@ async function streamOpenAICompatible(
         model: useModel,
         messages: openAiMessages,
         stream: true,
+        // STEP 10 (P1): cap per-round output — see AGENT_LOOP_MAX_OUTPUT_TOKENS.
+        max_tokens: AGENT_LOOP_MAX_OUTPUT_TOKENS,
       };
       // reasoning_effort is honoured by FreeLLMAPI (translated to the
       // provider's thinking config). Only set for planning turns — execution
@@ -2149,6 +2164,8 @@ export async function runGeminiAgentLoop(
     model: targetModel,
     config: {
       systemInstruction,
+      // STEP 10 (P1): cap per-round output — see AGENT_LOOP_MAX_OUTPUT_TOKENS.
+      maxOutputTokens: AGENT_LOOP_MAX_OUTPUT_TOKENS,
       // STEP 4 (P0): offer only the 81 core tools, never all 98
       // serverTools — same set the OpenAI-compatible loop sends.
       ...(allowTools ? { tools: [{ functionDeclarations: filterCoreTools(serverTools) }] } : {}),
@@ -2176,7 +2193,10 @@ export async function runGeminiAgentLoop(
     // would block turns that legitimately write on round 0.)
     const isFinalRound = allowTools && round === maxRounds - 1;
     const currentResult = isFinalRound
-      ? await chat.sendMessageStream({ message: nextPayload, config: { systemInstruction } })
+      // STEP 10 (P1): a per-request config replaces the chat config
+      // wholesale, so the output cap must be repeated here or the final
+      // round would be uncapped.
+      ? await chat.sendMessageStream({ message: nextPayload, config: { systemInstruction, maxOutputTokens: AGENT_LOOP_MAX_OUTPUT_TOKENS } })
       : await chat.sendMessageStream({ message: nextPayload });
     let roundText = '';
     const functionCalls: any[] = [];
