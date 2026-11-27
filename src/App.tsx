@@ -720,6 +720,12 @@ export default function App() {
           showTeamPanel={showTeamPanel}
           teamStatuses={teamStatuses}
           onAnalyzeError={handleAnalyzeError}
+          // Step 12 (P1): the preview iframe renders currentSessionHtml via
+          // srcDoc, so a disk-only save would never show in preview — sync
+          // the in-memory copy when the edited artifact is projects/index.html.
+          onArtifactSaved={(filePath, content) => {
+            if (filePath === 'projects/index.html') setCurrentSessionHtml(content);
+          }}
         />
 
         <SidebarDrawer

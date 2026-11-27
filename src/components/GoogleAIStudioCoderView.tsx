@@ -35,6 +35,8 @@ import {
   Bug,
   Bot,
   Eye,
+  Pencil,
+  Save,
   AlertTriangle,
   X
 } from 'lucide-react';
@@ -101,6 +103,10 @@ interface GoogleAIStudioCoderViewProps {
   showTeamPanel?: boolean;
   teamStatuses?: AgentStatus[];
   onAnalyzeError?: (errText: string) => void;
+  // Step 12 (P1): called after an artifact edit is saved to disk, so the
+  // parent can sync any in-memory copy (e.g. currentSessionHtml, which the
+  // preview iframe renders via srcDoc) with the edited content.
+  onArtifactSaved?: (filePath: string, content: string) => void;
 }
 
 const STARTER_PROMPTS = [
@@ -195,6 +201,7 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
   showTeamPanel = false,
   teamStatuses = [],
   onAnalyzeError,
+  onArtifactSaved,
 }) => {
   const [activeCoderTab, setActiveCoderTab] = useState<'chat' | 'preview' | 'artifacts'>('chat');
   const [isWorkingExpanded, setIsWorkingExpanded] = useState(false);
@@ -206,6 +213,14 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
   const [isListening, setIsListening] = useState(false);
   const [selectedArtifact, setSelectedArtifact] = useState<string>('projects/index.html');
   const [artifactContent, setArtifactContent] = useState<string | null>(null);
+  // Step 12 (P1): editable Artifacts panel. Read-only <pre> stays the
+  // default; Edit opens a <textarea> whose Save calls the EXISTING
+  // /api/tools/file-write endpoint (server.ts) — no new server code, no
+  // model call — then bumps previewKey so the preview refreshes.
+  const [isEditingArtifact, setIsEditingArtifact] = useState(false);
+  const [editedArtifactContent, setEditedArtifactContent] = useState('');
+  const [artifactSaveStatus, setArtifactSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [artifactSaveError, setArtifactSaveError] = useState<string | null>(null);
   const [checkpointToast, setCheckpointToast] = useState<string | null>(null);
   const [previewErrors, setPreviewErrors] = useState<Array<{ message: string; source?: string; line?: number; col?: number }>>([]);
   // No project built yet: no generated HTML and no files modified in this
@@ -275,6 +290,57 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
       })
       .catch(() => setArtifactContent(`// Failed to read ${selectedArtifact}`));
   }, [activeCoderTab, selectedArtifact, currentSessionHtml]);
+
+  // Step 12 (P1): switching files exits edit mode and clears the save status.
+  useEffect(() => {
+    setIsEditingArtifact(false);
+    setArtifactSaveStatus('idle');
+    setArtifactSaveError(null);
+  }, [selectedArtifact]);
+
+  // The content shown in the read-only view (same fallback as the <pre>).
+  const displayedArtifactContent = artifactContent !== null
+    ? artifactContent
+    : (selectedArtifact.includes('index.html')
+        ? (currentSessionHtml || "<!-- Open preview to see generated HTML -->")
+        : `// ${selectedArtifact}\n// Active in workspace`);
+
+  const handleStartEditingArtifact = () => {
+    setEditedArtifactContent(displayedArtifactContent);
+    setArtifactSaveStatus('idle');
+    setArtifactSaveError(null);
+    setIsEditingArtifact(true);
+  };
+
+  const handleSaveArtifact = async () => {
+    if (artifactSaveStatus === 'saving') return;
+    setArtifactSaveStatus('saving');
+    setArtifactSaveError(null);
+    try {
+      // Existing endpoint only (server.ts: /api/tools/file-write) — no new
+      // server code, no model call. Writes the whole edited file.
+      const res = await fetch('/api/tools/file-write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath: selectedArtifact, content: editedArtifactContent }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success !== true) {
+        throw new Error(data.error || `Save failed (HTTP ${res.status})`);
+      }
+      setArtifactContent(editedArtifactContent);
+      // Sync the parent's in-memory copy (e.g. currentSessionHtml backing
+      // the preview srcDoc) so the edited file actually shows in preview.
+      onArtifactSaved?.(selectedArtifact, editedArtifactContent);
+      // Remount the preview iframe so it re-renders the saved file.
+      setPreviewKey((k) => k + 1);
+      setArtifactSaveStatus('saved');
+      setIsEditingArtifact(false);
+    } catch (err: any) {
+      setArtifactSaveStatus('error');
+      setArtifactSaveError(err?.message || 'Save failed');
+    }
+  };
 
   // Live timer for "Gemini 3.8 Flash • Running for Xm Ys" matching screenshot
   useEffect(() => {
@@ -1282,25 +1348,75 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
                     <FileCode className="w-4 h-4 text-sky-400" />
                     <span className="font-semibold">{selectedArtifact}</span>
                   </div>
-                  <button
-                    onClick={() => {
-                      const contentToCopy = artifactContent || currentSessionHtml || '';
-                      if (contentToCopy) navigator.clipboard.writeText(contentToCopy);
-                      handleCopyCode();
-                    }}
-                    className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors"
-                  >
-                    {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedCode ? 'Copied' : 'Copy'}</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {/* Step 12 (P1): save status — saved / error, cleared on file switch or next edit */}
+                    {artifactSaveStatus === 'saved' && (
+                      <span className="text-xs text-emerald-400 flex items-center gap-1">
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Saved — preview refreshed</span>
+                      </span>
+                    )}
+                    {artifactSaveStatus === 'error' && (
+                      <span className="text-xs text-rose-400 flex items-center gap-1" title={artifactSaveError || undefined}>
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        <span>Save failed{artifactSaveError ? `: ${artifactSaveError}` : ''}</span>
+                      </span>
+                    )}
+                    {isEditingArtifact ? (
+                      <>
+                        <button
+                          onClick={() => setIsEditingArtifact(false)}
+                          className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleSaveArtifact}
+                          disabled={artifactSaveStatus === 'saving' || editedArtifactContent === artifactContent}
+                          className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors"
+                        >
+                          <Save className="w-3.5 h-3.5" />
+                          <span>{artifactSaveStatus === 'saving' ? 'Saving…' : 'Save'}</span>
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={handleStartEditingArtifact}
+                          className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors"
+                          title="Edit this file"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            const contentToCopy = artifactContent || currentSessionHtml || '';
+                            if (contentToCopy) navigator.clipboard.writeText(contentToCopy);
+                            handleCopyCode();
+                          }}
+                          className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors"
+                        >
+                          {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                          <span>{copiedCode ? 'Copied' : 'Copy'}</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
-                <pre className="flex-1 whitespace-pre-wrap break-all text-slate-300 font-mono text-xs leading-relaxed overflow-auto p-2 bg-[#090d16] rounded-xl border border-slate-800">
-                  {artifactContent !== null
-                    ? artifactContent
-                    : (selectedArtifact.includes('index.html')
-                        ? (currentSessionHtml || "<!-- Open preview to see generated HTML -->")
-                        : `// ${selectedArtifact}\n// Active in workspace`)}
-                </pre>
+                {isEditingArtifact ? (
+                  <textarea
+                    value={editedArtifactContent}
+                    onChange={(e) => setEditedArtifactContent(e.target.value)}
+                    spellCheck={false}
+                    className="flex-1 whitespace-pre text-slate-300 font-mono text-xs leading-relaxed overflow-auto p-2 bg-[#090d16] rounded-xl border border-indigo-500/50 focus:outline-none focus:border-indigo-400 resize-none"
+                    aria-label={`Edit ${selectedArtifact}`}
+                  />
+                ) : (
+                  <pre className="flex-1 whitespace-pre-wrap break-all text-slate-300 font-mono text-xs leading-relaxed overflow-auto p-2 bg-[#090d16] rounded-xl border border-slate-800">
+                    {displayedArtifactContent}
+                  </pre>
+                )}
               </div>
             </div>
           </div>
