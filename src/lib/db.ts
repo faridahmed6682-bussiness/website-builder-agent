@@ -130,6 +130,21 @@ export async function deleteSession(id: string): Promise<void> {
   }
 }
 
+/** Duplicate a session under a new id ("remix this project", Step 14).
+ * The server clone endpoint copies projects/<id>/ + the stored chat; this
+ * copies the IndexedDB session so the remix opens as its own chat. */
+export async function duplicateSession(source: ChatSession, newId: string, newTitle?: string): Promise<ChatSession> {
+  const copy: ChatSession = {
+    ...source,
+    id: newId,
+    title: newTitle || `Copy of ${source.title || 'Untitled Project'}`,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  await saveSession(copy);
+  return copy;
+}
+
 export function generateSessionTitle(prompt: string): string {
   const clean = (prompt || '').trim().replace(/^["']|["']$/g, '');
   if (!clean) return 'New Canvas';

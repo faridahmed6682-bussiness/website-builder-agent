@@ -20,8 +20,10 @@ import {
   Activity,
   Layers,
   Network,
-  Bot
+  Bot,
+  Palette
 } from 'lucide-react';
+import { DesignTools } from './DesignTools';
 
 interface ToolsModalProps {
   isOpen: boolean;
@@ -36,7 +38,7 @@ const SANDBOX_STARTERS: Record<'python' | 'javascript' | 'typescript' | 'bash', 
 };
 
 export const ToolsModal: React.FC<ToolsModalProps> = ({ isOpen, onClose }) => {
-  const [activeTab, setActiveTab] = useState<'pipeline' | 'skills' | 'claw' | 'sandbox' | 'functions' | 'debug' | 'code' | 'build' | 'terminal' | 'git' | 'security' | 'search' | 'sql'>('pipeline');
+  const [activeTab, setActiveTab] = useState<'pipeline' | 'skills' | 'claw' | 'sandbox' | 'functions' | 'debug' | 'code' | 'build' | 'terminal' | 'git' | 'security' | 'search' | 'sql' | 'design'>('pipeline');
   const [command, setCommand] = useState('git status');
   const [clawTaskInput, setClawTaskInput] = useState('Build a real-time collaborative workspace with persistent local database');
   const [sandboxLang, setSandboxLang] = useState<'python' | 'javascript' | 'typescript' | 'bash'>('python');
@@ -442,6 +444,7 @@ export const ToolsModal: React.FC<ToolsModalProps> = ({ isOpen, onClose }) => {
             { id: 'security', label: 'Security', icon: ShieldAlert },
             { id: 'search', label: 'Web Search', icon: Search },
             { id: 'sql', label: 'SQL', icon: Database },
+            { id: 'design', label: 'Design Utilities', icon: Palette },
           ].map((tab) => {
             const Icon = tab.icon;
             return (
@@ -1025,6 +1028,10 @@ export const ToolsModal: React.FC<ToolsModalProps> = ({ isOpen, onClose }) => {
                 </button>
               </div>
             </div>
+          )}
+
+          {activeTab === 'design' && (
+            <DesignTools />
           )}
 
           {/* Terminal / Output Display */}

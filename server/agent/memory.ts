@@ -222,6 +222,60 @@ export async function listProjects(): Promise<Array<{ sessionId: string; title: 
 }
 
 // ---------------------------------------------------------------------------
+// Clone / remix a project (Step 14)
+// ---------------------------------------------------------------------------
+async function copyDirRecursive(src: string, dest: string): Promise<number> {
+  await fs.mkdir(dest, { recursive: true });
+  let count = 0;
+  const entries = await fs.readdir(src, { withFileTypes: true });
+  for (const e of entries) {
+    const s = path.join(src, e.name);
+    const d = path.join(dest, e.name);
+    if (e.isDirectory()) {
+      count += await copyDirRecursive(s, d);
+    } else if (e.isFile()) {
+      const st = await fs.stat(s);
+      if (st.size > 10 * 1024 * 1024) continue; // skip oversized files
+      await fs.copyFile(s, d);
+      count++;
+    }
+  }
+  return count;
+}
+
+/** Clone / remix a project: copies projects/<sourceId>/ to a new project
+ * dir and duplicates the stored chat (new id, title "Copy of …"). Works
+ * for chat-only sessions too (no project dir → chat copy only). Returns
+ * null when the source session does not exist at all. */
+export async function cloneProject(sourceId: string): Promise<{ sessionId: string; title: string; url: string | null; files: number } | null> {
+  const safe = safeSessionId(sourceId);
+  const srcDir = path.join(PROJECTS_DIR, safe);
+  const srcChat = await loadChat(safe);
+  let hasDir = false;
+  try { hasDir = (await fs.stat(srcDir)).isDirectory(); } catch { /* no project dir */ }
+  if (!hasDir && !srcChat) return null;
+  const newId = `${safe}-copy-${Date.now()}`.slice(0, 80);
+  let files = 0;
+  if (hasDir) {
+    files = await copyDirRecursive(srcDir, path.join(PROJECTS_DIR, newId));
+  }
+  const now = Date.now();
+  const title = srcChat ? `Copy of ${srcChat.title || safe}` : `Copy of ${safe}`;
+  if (srcChat) {
+    const clone: StoredChat = {
+      ...srcChat,
+      id: newId,
+      title,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await fs.mkdir(CHATS_DIR, { recursive: true });
+    await fs.writeFile(chatPath(newId), JSON.stringify(clone, null, 2), 'utf-8');
+  }
+  return { sessionId: newId, title, url: hasDir ? `/projects/${newId}/index.html` : null, files };
+}
+
+// ---------------------------------------------------------------------------
 // Backup / export (zip: memory.md + chats + projects)
 // ---------------------------------------------------------------------------
 export async function exportBackup(): Promise<Buffer> {

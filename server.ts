@@ -31,7 +31,7 @@ import { getGitHubConnection, isOAuthConfigured, getOAuthCallbackUrl, newOAuthSt
 import { startDeploy, getDeployJob, deployStatus } from './server/agent/deployService.ts';
 import { initModelChain, getChainForTask, catalogStatus, modelChainStatus } from './server/agent/modelChain.ts';
 import { wireNexusScheduler } from './server/agent/nexusTools.ts';
-import { readUserMemory, appendUserMemory, setUserMemory, loadChat, listChats, listProjects, exportBackup } from './server/agent/memory.ts';
+import { readUserMemory, appendUserMemory, setUserMemory, loadChat, listChats, listProjects, cloneProject, exportBackup } from './server/agent/memory.ts';
 import { readLessons } from './server/agent/lessons.ts';
 import { createJob, listJobs, getJob, cancelJob, startJobWorker, type Job } from './server/agent/jobs.ts';
 import { mountRouter, routerStatus, routerUsageSummary } from './server/router/index.ts';
@@ -885,6 +885,18 @@ service cloud.firestore {
     res.json(chat);
   });
   app.get('/api/projects', async (_req, res) => { res.json({ projects: await listProjects() }); });
+  // Clone / remix a project: copies projects/<id>/ + the stored chat to a
+  // new session id (Step 14). The client then duplicates the IndexedDB
+  // session copy under the returned id.
+  app.post('/api/projects/:id/clone', async (req, res) => {
+    try {
+      const cloned = await cloneProject(req.params.id);
+      if (!cloned) return res.status(404).json({ error: 'Project not found.' });
+      res.json({ success: true, ...cloned });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'Clone failed.' });
+    }
+  });
   app.get('/api/backup', async (_req, res) => {
     const buf = await exportBackup();
     res.setHeader('Content-Type', 'application/zip');

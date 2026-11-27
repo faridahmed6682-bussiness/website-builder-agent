@@ -8,7 +8,7 @@ import { autoDeployWebsiteFromText, getNexusSystemInstruction, prepareGeminiHist
 import { routeTurnModel, turnReasoningEffort, classifyTask, pickPlanningEffort, planningChain, cheapChain, codingChain, chatOnce, chatChain, type PlanningEffort } from "./llmClient.ts";
 import { getRouterApiKey, NO_PROVIDER_KEYS_MESSAGE, NO_PROVIDER_KEYS_CODE } from "../router/keys.ts";
 import { decideIntent, CASUAL_SYSTEM } from "./intentGate.ts";
-import { matchDirectCommand, getCachedToolResult, setCachedToolResult } from "./directTools.ts";
+import { matchDirectCommand, getCachedToolResult, setCachedToolResult, applyDirectEdit } from "./directTools.ts";
 import { readUserMemory, saveChatTurn, loadChat, listProjects, listChats } from "./memory.ts";
 import { splitHistoryWindow, ensureRollingSummary, summaryTurn } from "./historyWindow.ts";
 import { readLessons, recordLesson } from "./lessons.ts";
@@ -2450,6 +2450,10 @@ export async function handleOrchestratedChat(
       let servedFromCache = false;
       if (direct.kind === 'local') {
         resultText = await runLocalDirectCommand(direct.tool, sessionId);
+      } else if (direct.kind === 'edit') {
+        // Deterministic file edit (Step 14): exact string op on a known
+        // file — no model call, never cached (it is a write).
+        resultText = await applyDirectEdit(direct);
       } else {
         const cached = await getCachedToolResult(direct.tool, direct.args);
         if (cached.hit) {
