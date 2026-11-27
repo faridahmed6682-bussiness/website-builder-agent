@@ -184,6 +184,14 @@ export default function App() {
   const [checkpointToast, setCheckpointToast] = useState<string | null>(null);
   const executionTimerRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // In-flight send guard (ref, not state): handleSend's `isLoading` check
+  // reads a render closure, so two rapid sends (Enter + Send click, or a
+  // browser automation double-trigger) can both pass it in the same tick
+  // and run two concurrent chatWithAI streams — their onText upserts then
+  // race and collapse two turns into ONE model bubble. A ref flips
+  // synchronously, so the second call is always refused (live QA round 2:
+  // 3 user messages, only 2 assistant bubbles).
+  const isSendingRef = useRef(false);
   const actionStepsRef = useRef<ActionStep[]>([]);
   const modifiedFilesRef = useRef<string[]>([]);
   const executionDurationRef = useRef<number>(0);
@@ -351,7 +359,8 @@ export default function App() {
 
   const handleSend = async (overrideText?: string | React.MouseEvent) => {
     const textToSend = typeof overrideText === 'string' ? overrideText : input;
-    if (!textToSend.trim() || isLoading || cooldown > 0) return;
+    if (!textToSend.trim() || isLoading || isSendingRef.current || cooldown > 0) return;
+    isSendingRef.current = true;
 
     const userMessage: any = { role: 'user', parts: [{ text: textToSend }] };
     const imageForThisTurn = attachedImage;
@@ -548,6 +557,7 @@ export default function App() {
         isFinished: true,
       }]);
     } finally {
+      isSendingRef.current = false;
       setIsLoading(false);
       setPendingQuestion(null);
       setActionLog(null);
@@ -707,6 +717,8 @@ export default function App() {
           multiAgent={multiAgent}
           setMultiAgent={setMultiAgent}
           onToggleTeamPanel={() => setShowTeamPanel(v => !v)}
+          showTeamPanel={showTeamPanel}
+          teamStatuses={teamStatuses}
           onAnalyzeError={handleAnalyzeError}
         />
 

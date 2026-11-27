@@ -46,6 +46,7 @@ import { GitHubConnectButton } from './GitHubConnectButton';
 import { DeployButton } from './DeployButton';
 import { FirebaseConnectButton, AddFirebaseButton } from './FirebaseConnectButton';
 import { ActionStep } from '../types/secrets';
+import { TeamStatus, type AgentStatus } from './TeamStatus';
 
 interface GoogleAIStudioCoderViewProps {
   messages: any[];
@@ -91,6 +92,14 @@ interface GoogleAIStudioCoderViewProps {
   multiAgent?: boolean;
   setMultiAgent?: (enabled: boolean) => void;
   onToggleTeamPanel?: () => void;
+  // Team panel: the Multi-Agent button (in this view) toggles it, so the
+  // panel MUST render in this same mounted tree. App.tsx used to render
+  // <TeamStatus> only in its non-coding branch, which never mounts while
+  // this coding view is active (the default) — the button flipped state
+  // that no mounted component read, so no panel ever appeared (live QA
+  // round 2, 2026-11-27).
+  showTeamPanel?: boolean;
+  teamStatuses?: AgentStatus[];
   onAnalyzeError?: (errText: string) => void;
 }
 
@@ -183,6 +192,8 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
   multiAgent = true,
   setMultiAgent,
   onToggleTeamPanel,
+  showTeamPanel = false,
+  teamStatuses = [],
   onAnalyzeError,
 }) => {
   const [activeCoderTab, setActiveCoderTab] = useState<'chat' | 'preview' | 'artifacts'>('chat');
@@ -584,6 +595,19 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
         </div>
       </header>
 
+      {/* Multi-agent team panel (Planner → Coder → Reviewer → Tester).
+          Rendered here — in the same mounted tree as the Multi-Agent
+          button — so the button visibly opens it. Shows all 4 agents
+          grey/idle when no run is active. */}
+      {(showTeamPanel || teamStatuses.length > 0) && (
+        <div className="px-4 pt-2 pb-1 border-b border-slate-800/60 bg-[#131314] flex-shrink-0">
+          <div className="max-w-2xl mx-auto w-full flex items-center gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0">Team</span>
+            <TeamStatus statuses={teamStatuses} />
+          </div>
+        </div>
+      )}
+
       {/* Main Body Area (Chat / Preview / Artifacts) */}
       <main className="flex-1 overflow-hidden flex flex-col relative">
         {/* --- TAB 1: CHAT VIEW --- */}
@@ -661,8 +685,15 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
                           />
                         )}
 
-                        {/* Model response body */}
-                        <div className="text-slate-100 text-sm leading-relaxed pt-1">
+                        {/* Model response body — failed requests (isError)
+                            render as a visibly distinct red bubble, same as
+                            App's non-coding view: without this, an error
+                            reply looked identical to a normal reply in this
+                            (default) view, so a failed turn was
+                            indistinguishable — and uncountable — in live QA. */}
+                        <div className={m.isError
+                          ? "text-rose-200 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2 text-sm leading-relaxed"
+                          : "text-slate-100 text-sm leading-relaxed pt-1"}>
                           {renderMessageContent(m.parts[0]?.text || '')}
                         </div>
 
