@@ -5,7 +5,7 @@
 // continue, edit, redeploy) + Jobs (background jobs).
 // The FreeLLMAPI standalone dashboard is not needed day-to-day.
 import React, { useState, useEffect, useCallback } from 'react';
-import { X, Key, BarChart3, Link2, FolderOpen, Clock, Plus, Trash2, Play, ExternalLink, Loader2 } from 'lucide-react';
+import { X, Key, BarChart3, Link2, FolderOpen, Clock, Plus, Trash2, Play, ExternalLink, Loader2, Copy } from 'lucide-react';
 import { DeployButton } from './DeployButton';
 
 type Tab = 'keys' | 'usage' | 'chain' | 'projects' | 'jobs';
@@ -155,6 +155,24 @@ export const Dashboard: React.FC<DashboardProps> = ({ open, onClose, onSelectPro
   const cancelJob = async (id: string) => {
     await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
     load();
+  };
+
+  // Clone / remix a project (Step 14): server copies projects/<id>/ + the
+  // stored chat; the copy appears in this list on reload.
+  const [cloningId, setCloningId] = useState<string | null>(null);
+  const cloneProject = async (sessionId: string) => {
+    setCloningId(sessionId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(sessionId)}/clone`, { method: 'POST' });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || 'Clone failed');
+      await load();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setCloningId(null);
+    }
   };
 
   if (!open) return null;
@@ -330,6 +348,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ open, onClose, onSelectPro
                         className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1"
                       >
                         <Play className="w-3 h-3" /> Open
+                      </button>
+                      <button
+                        onClick={() => cloneProject(p.sessionId)}
+                        disabled={cloningId === p.sessionId}
+                        className="px-2.5 py-1.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white rounded-lg text-xs font-semibold flex items-center gap-1"
+                        title="Clone / remix this project — copies its files and chat to a new project"
+                      >
+                        {cloningId === p.sessionId ? <Loader2 className="w-3 h-3 animate-spin" /> : <Copy className="w-3 h-3" />} Remix
                       </button>
                       <DeployButton sessionId={p.sessionId} />
                     </div>

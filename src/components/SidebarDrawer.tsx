@@ -3,7 +3,8 @@ import {
   X, 
   Plus, 
   MessageSquare, 
-  Trash2, 
+  Trash2,
+  Copy,
   Settings, 
   Key, 
   Github, 
@@ -15,7 +16,7 @@ import {
   ChevronRight,
   Database
 } from 'lucide-react';
-import { getAllSessions, deleteSession, ChatSession } from '../lib/db';
+import { getAllSessions, getSession, deleteSession, duplicateSession, ChatSession } from '../lib/db';
 
 interface SidebarDrawerProps {
   isOpen: boolean;
@@ -68,6 +69,41 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
     loadSessions();
     if (currentSessionId === id) {
       onNewChat();
+    }
+  };
+
+  // Clone / remix (Step 14): server copies projects/<id>/ + the stored
+  // chat, then the IndexedDB session is duplicated under the new id. If
+  // the server has nothing for this session yet (chat-only, no turn saved
+  // server-side), fall back to a local-only duplicate.
+  const handleCloneSession = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(id)}/clone`, { method: 'POST' });
+      const d = await res.json().catch(() => ({}));
+      if (res.ok && d.sessionId) {
+        const src = await getSession(id);
+        if (src) await duplicateSession(src, d.sessionId, d.title);
+        loadSessions();
+        onSelectSession(d.sessionId);
+        onClose();
+        return;
+      }
+      const src = await getSession(id);
+      if (src) {
+        const copy = await duplicateSession(src, `session_${Date.now()}`);
+        loadSessions();
+        onSelectSession(copy.id);
+        onClose();
+      }
+    } catch {
+      const src = await getSession(id);
+      if (src) {
+        const copy = await duplicateSession(src, `session_${Date.now()}`);
+        loadSessions();
+        onSelectSession(copy.id);
+        onClose();
+      }
     }
   };
 
@@ -150,13 +186,22 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
                     </span>
                   </div>
 
-                  <button
-                    onClick={(e) => handleDeleteSession(e, sess.id)}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-slate-500 hover:text-rose-400 rounded transition-opacity"
-                    title="Delete session"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={(e) => handleCloneSession(e, sess.id)}
+                      className="p-1 text-slate-500 hover:text-indigo-400 rounded transition-opacity"
+                      title="Clone / remix this project"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={(e) => handleDeleteSession(e, sess.id)}
+                      className="p-1 text-slate-500 hover:text-rose-400 rounded transition-opacity"
+                      title="Delete session"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               );
             })
