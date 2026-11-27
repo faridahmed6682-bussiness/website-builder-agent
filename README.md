@@ -358,6 +358,15 @@ numbers.
 **Zero-cost tool layer:** deterministic commands are routed by a small local
 intent matcher with **zero API calls** ("show file X" → `view_file` directly;
 "list files" → `list_dir`; "git status" → direct). Tool outputs the user just
+saw are served from a short-lived cache (server/agent/directTools.ts).
+
+**Build cache:** an exact repeat of a build prompt (same normalised prompt +
+requested model + task) serves the stored site + reply from
+`data/build-cache.json` with **zero model calls** — the intent gate and the
+router are never reached (server/agent/buildCache.ts). The Live Preview shows
+a "⚡ Cached build" label and a "Rebuild anyway" button that bypasses the
+cache and builds fresh. Bounds: max 50 entries (oldest-served evicted first),
+entries expire after 7 days, builds over 2 MiB of HTML are not stored.
 needs to **see** (file contents, search results, build logs) go straight to
 the UI without being fed back to the model. Tool results are **cached** (same
 file/search twice → cached result, no model call). File ops, git status,
