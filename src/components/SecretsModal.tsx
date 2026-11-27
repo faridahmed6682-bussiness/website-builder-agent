@@ -56,6 +56,72 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
   // status only — key VALUES are never sent to the client or shown here.
   const [poolList, setPoolList] = useState<Array<{ id: string; provider: string; name: string; model: string; status: string; limitKind?: string | null; limitLabel?: string | null; cooldownRemainingSec: number }>>([]);
 
+  // ---- Bulk key entry: paste many keys at once, one per line -------------
+  // Provider is auto-detected from the key prefix; unrecognized lines are
+  // reported and never stored. Keys are saved through the SAME local path as
+  // the single-key form (addLocalKey) — this panel's pool is local browser
+  // storage (synced to the server by saveLocalKeys), NOT the server router
+  // pool. Each bulk key gets its own provider's default model (the first
+  // model of that provider's preset — the same model a provider switch
+  // would pick): the server passes a key's model through verbatim, so a
+  // cross-provider model (e.g. a Groq key saved with a Gemini model) would
+  // fail. Key VALUES are never shown back — results show only provider + a
+  // 4-char hint.
+  const [bulkText, setBulkText] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  type BulkResult = { provider: string; hint: string; status: 'added' | 'exists' | 'failed' | 'unrecognized'; message?: string };
+  const [bulkResults, setBulkResults] = useState<BulkResult[]>([]);
+
+  const detectProvider = (line: string): 'gemini' | 'groq' | 'openrouter' | null => {
+    if (line.startsWith('AIza')) return 'gemini';
+    if (line.startsWith('gsk_')) return 'groq';
+    if (line.startsWith('sk-or-v1-')) return 'openrouter';
+    return null;
+  };
+
+  const handleAddBulkKeys = () => {
+    const lines = bulkText.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return;
+    setBulkBusy(true);
+    setBulkResults([]);
+    // addLocalKey() does NOT dedupe — check against the existing local pool
+    // (plus keys added earlier in this same run) before saving.
+    const seen = new Set(getLocalKeys().map((k) => k.apiKey));
+    const results: BulkResult[] = [];
+    for (const line of lines) {
+      const provider = detectProvider(line);
+      const hint = `${line.slice(0, 4)}…`;
+      if (!provider) {
+        results.push({ provider: 'অচেনা', hint, status: 'unrecognized', message: 'প্রোভাইডার চেনা যায়নি — AIza / gsk_ / sk-or-v1- দিয়ে শুরু হতে হবে।' });
+        continue;
+      }
+      if (seen.has(line)) {
+        results.push({ provider, hint, status: 'exists', message: 'এই key আগেই পুলে আছে।' });
+        continue;
+      }
+      try {
+        const model = getProviderPreset(provider).models[0]?.id || 'gemini-3.8-flash';
+        addLocalKey({
+          name: `${provider.toUpperCase()} (${model.split('/').pop()})`,
+          apiKey: line,
+          provider,
+          model,
+          isActive: true,
+          rpmLimit: provider === 'gemini' || provider === 'groq' ? 15 : 20,
+        });
+        seen.add(line);
+        results.push({ provider, hint, status: 'added' });
+      } catch (e: any) {
+        results.push({ provider, hint, status: 'failed', message: e?.message || 'যোগ করা যায়নি' });
+      }
+    }
+    setBulkResults(results);
+    setBulkText('');
+    setBulkBusy(false);
+    loadKeys();
+    onKeysUpdated?.();
+  };
+
   const loadKeys = () => {
     const local = getLocalKeys();
     setKeys(local);
@@ -418,6 +484,54 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
                 <span>Save Key to Pool</span>
               </button>
             </div>
+          </div>
+
+          {/* Bulk entry — paste all keys at once, one per line */}
+          <div className="p-4 bg-slate-900/90 border border-slate-800 rounded-xl space-y-2">
+            <p className="font-bold text-white text-[11px] uppercase tracking-wider flex items-center gap-1.5">
+              <Plus className="w-3.5 h-3.5 text-indigo-400" />
+              <span>একসাথে অনেক key বসান (বাল্ক)</span>
+            </p>
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              সব key একসাথে পেস্ট করুন — এক লাইনে একটা key। Gemini (AIza…), Groq (gsk_…) ও OpenRouter (sk-or-v1-…) নিজে থেকেই চেনা হবে। প্রতিটা key-তে তার প্রোভাইডারের ডিফল্ট ফ্রি মডেল বসবে। Key-র মান কোথাও দেখানো হয় না।
+            </p>
+            <textarea
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              placeholder={'AIza…\ngsk_…\nsk-or-v1-…'}
+              rows={4}
+              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-2 text-white placeholder:text-slate-500 focus:outline-none font-mono text-xs resize-y"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleAddBulkKeys}
+                disabled={!bulkText.trim() || bulkBusy}
+                className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg font-semibold flex items-center gap-1.5 cursor-pointer"
+              >
+                {bulkBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />} সবগুলো যোগ করুন
+              </button>
+              {bulkResults.length > 0 && (
+                <span className="text-[11px] text-slate-400">
+                  {bulkResults.filter((r) => r.status === 'added').length}টি যুক্ত হয়েছে · {bulkResults.filter((r) => r.status === 'exists').length}টি আগে থেকেই ছিল
+                </span>
+              )}
+            </div>
+            {bulkResults.length > 0 && (
+              <div className="space-y-1.5">
+                {bulkResults.map((r, i) => (
+                  <div key={i} className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${r.status === 'added' ? 'bg-emerald-400' : r.status === 'exists' ? 'bg-amber-400' : 'bg-rose-400'}`} />
+                    <span className="text-white font-medium">{r.provider}</span>
+                    <span className="text-slate-500 font-mono">{r.hint}</span>
+                    <span className={r.status === 'added' ? 'text-emerald-300' : r.status === 'exists' ? 'text-amber-300' : 'text-rose-300'}>
+                      {r.status === 'added' ? 'যুক্ত হয়েছে' : r.status === 'exists' ? 'আগে থেকেই আছে' : r.status === 'unrecognized' ? 'চেনা যায়নি' : 'ব্যর্থ'}
+                    </span>
+                    {r.message && <span className="text-slate-400 truncate">{r.message}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Server key pool (env vars) — names + live status only, never values.
