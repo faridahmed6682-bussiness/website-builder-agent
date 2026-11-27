@@ -84,7 +84,9 @@ const FAMILY_SCORES: FamilyScore[] = [
   { pattern: /gemini-2\.5-flash/i, coding: 72, planning: 68, chat: 78 },
   // Today's OpenRouter free leaders (checked 27 Nov 2026, live /v1/models):
   // Nemotron 3 family, Gemma 4, Particle-1 (agentic coding), Ling 3.2 Flash,
-  // Ernie 5.5 Flash, Flint, LFM-3. No R1, no Qwen3-Coder-480B, no Llama 3.3.
+  // Flint, LFM-3. No R1, no Qwen3-Coder-480B, no Llama 3.3. Ernie 5.5 Flash
+  // is listed by OpenRouter but EXCLUDED (see EXCLUDED_MODEL_PATTERNS) —
+  // Baidu is not in the user's provider list.
   { pattern: /nemotron-3-ultra/i, coding: 76, planning: 78, chat: 72 },
   { pattern: /nemotron/i, coding: 72, planning: 74, chat: 72 },
   { pattern: /particle-1/i, coding: 82, planning: 76, chat: 70 },
@@ -155,6 +157,12 @@ const EXCLUDED_MODEL_PATTERNS: RegExp[] = [
   /flash-image/i,
   /gemini-3\.7-flash/i,
   /gemini-3\.5-flash(?!-lite)/i,
+  // Baidu / Ernie: NOT in the user's provider list (Gemini + Groq +
+  // OpenRouter only). Never in any chain, never attempted as a fallback —
+  // live QA 2026-11-27 caught the chain offering baidu/ernie-5.5-flash
+  // to a keyless server and failing with a misleading error.
+  /baidu\//i,
+  /ernie/i,
 ];
 
 /** True when a model id is paid-only, media-only, or retired — never chain it. */

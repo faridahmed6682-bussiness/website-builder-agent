@@ -17,7 +17,10 @@ const ROLES: Array<{ role: AgentStatus['role']; label: string }> = [
 ];
 
 export const TeamStatus: React.FC<{ statuses: AgentStatus[] }> = ({ statuses }) => {
-  if (!statuses.length) return null;
+  // No early return on empty: the panel shows all four agents with grey
+  // (idle) dots when no run is active — the Multi-Agent button opens this
+  // panel even before the first build (live QA 2026-11-27: the button
+  // showed no panel at all).
   const byRole = new Map(statuses.map((s) => [s.role, s]));
   return (
     <div className="flex flex-wrap items-center gap-2 max-w-4xl mx-auto w-full px-1 py-1">

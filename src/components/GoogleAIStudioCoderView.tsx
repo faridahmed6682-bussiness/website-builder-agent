@@ -90,6 +90,7 @@ interface GoogleAIStudioCoderViewProps {
   setOutputFormat?: (format: 'auto' | 'markdown' | 'json') => void;
   multiAgent?: boolean;
   setMultiAgent?: (enabled: boolean) => void;
+  onToggleTeamPanel?: () => void;
   onAnalyzeError?: (errText: string) => void;
 }
 
@@ -181,6 +182,7 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
   setOutputFormat,
   multiAgent = true,
   setMultiAgent,
+  onToggleTeamPanel,
   onAnalyzeError,
 }) => {
   const [activeCoderTab, setActiveCoderTab] = useState<'chat' | 'preview' | 'artifacts'>('chat');
@@ -195,6 +197,10 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
   const [artifactContent, setArtifactContent] = useState<string | null>(null);
   const [checkpointToast, setCheckpointToast] = useState<string | null>(null);
   const [previewErrors, setPreviewErrors] = useState<Array<{ message: string; source?: string; line?: number; col?: number }>>([]);
+  // No project built yet: no generated HTML and no files modified in this
+  // session — show a friendly Bengali empty state instead of a blank white
+  // iframe (live QA 2026-11-27).
+  const noProjectYet = !currentSessionHtml && modifiedFiles.length === 0;
 
   useEffect(() => {
     setPreviewErrors([]);
@@ -877,14 +883,14 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
                     {setMultiAgent && (
                       <button
                         type="button"
-                        onClick={() => setMultiAgent(!multiAgent)}
+                        onClick={() => { setMultiAgent(!multiAgent); onToggleTeamPanel?.(); }}
                         className={cn(
                           "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors cursor-pointer",
                           multiAgent
                             ? "bg-violet-500/20 border-violet-500/40 text-violet-300"
                             : "bg-[#27282d] hover:bg-[#2f3137] border-slate-700/80 text-slate-400"
                         )}
-                        title="Multi-Agent Orchestration (Architect → Executor → Reviewer)"
+                        title="Multi-Agent Orchestration (Architect → Executor → Reviewer) — টিম প্যানেল খুলুন"
                       >
                         <Bot className="w-3.5 h-3.5" />
                         <span className="hidden sm:inline">Multi-Agent</span>
@@ -1107,7 +1113,17 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
               "flex-1 overflow-auto flex items-center justify-center",
               previewDevice === 'mobile' ? "bg-slate-900/60 p-4" : "bg-white"
             )}>
-              {previewDevice === 'mobile' ? (
+              {noProjectYet ? (
+                <div className="flex-1 self-stretch flex flex-col items-center justify-center text-center px-6 py-10 bg-slate-950">
+                  <div className="w-14 h-14 rounded-2xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mb-4">
+                    <Monitor className="w-7 h-7 text-indigo-400" />
+                  </div>
+                  <p className="text-white font-bold text-sm mb-1">এখনো কোনো প্রজেক্ট বানানো হয়নি</p>
+                  <p className="text-slate-400 text-xs leading-relaxed max-w-xs">
+                    চ্যাটে কিছু বানাতে বলুন — যেমন “আমার দোকানের একটা ওয়েবসাইট বানাও” — তারপর এখানে লাইভ প্রিভিউ দেখা যাবে।
+                  </p>
+                </div>
+              ) : previewDevice === 'mobile' ? (
                 <div className="w-[375px] h-[700px] rounded-[36px] border-[8px] border-slate-700 bg-white shadow-2xl flex flex-col overflow-hidden relative">
                   <div className="absolute top-0 left-1/2 -translate-x-1/2 w-28 h-4 bg-slate-700 rounded-b-xl z-30 flex items-center justify-center">
                     <div className="w-10 h-1 bg-slate-600 rounded-full" />

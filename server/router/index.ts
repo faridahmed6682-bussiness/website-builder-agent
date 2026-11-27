@@ -26,9 +26,10 @@ import {
   modelChainStatus,
   listCatalogIds,
   parseRetryAfter,
+  isModelExcluded,
   type TaskKind,
 } from '../agent/modelChain.ts';
-import { selectRouterKey, recordRouterKeyFailure, recordRouterKeySuccess, routerKeyStatus, getRouterApiKey, type RouterProvider } from './keys.ts';
+import { selectRouterKey, recordRouterKeyFailure, recordRouterKeySuccess, routerKeyStatus, getRouterApiKey, hasAnyRouterKey, NO_PROVIDER_KEYS_MESSAGE, NO_PROVIDER_KEYS_CODE, type RouterProvider } from './keys.ts';
 import { callProvider, type RouterChatRequest } from './providers.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -135,10 +136,26 @@ export interface RoutedResult {
 
 export async function routeChatCompletion(req: RouterChatRequest): Promise<RoutedResult> {
   await loadUsage();
+  // NO KEYS AT ALL: answer immediately in Bengali and point at the Keys
+  // tab. Never rotate through keyless providers and never surface a
+  // misleading "trying <next model>" error (live QA 2026-11-27).
+  if (!(await hasAnyRouterKey())) {
+    const err: any = new Error(NO_PROVIDER_KEYS_MESSAGE);
+    err.code = NO_PROVIDER_KEYS_CODE;
+    throw err;
+  }
   let model = req.model || 'auto:balanced';
   if (model.startsWith('auto:')) model = resolveAutoModel(model);
   let lastErr = new Error('No provider key is configured. Add Gemini / Groq / OpenRouter keys in the Keys tab or as env vars (GEMINI_API_KEYS / GROQ_API_KEYS / OPENROUTER_API_KEYS).');
   for (let attempt = 0; attempt < 5; attempt++) {
+    // Excluded models (paid-only, retired, Baidu/Ernie) are NEVER attempted
+    // — skip to the next chain entry without calling any provider.
+    if (isModelExcluded(model)) {
+      const next = nextAfterFailure(model, 'coding');
+      if (!next) break;
+      model = next.model;
+      continue;
+    }
     const provider = providerOfModel(model);
     const key = await selectRouterKey(provider);
     if (!key) {
@@ -262,7 +279,7 @@ export function mountRouter(app: Express): void {
       res.status(response.status).send(text);
     } catch (err: any) {
       const msg = String(err?.message || err || 'Router failed');
-      const status = /No .* key is configured/i.test(msg) ? 400 : 502;
+      const status = err?.code === NO_PROVIDER_KEYS_CODE || /No .* key is configured/i.test(msg) ? 400 : 502;
       res.status(status).json({ error: { message: msg.slice(0, 500), type: 'server_error' } });
     }
   });

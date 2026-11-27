@@ -151,6 +151,9 @@ export default function App() {
   // Vision (build from image), team status, usage display, unified dashboard.
   const [attachedImage, setAttachedImage] = useState<{ dataUrl: string; base64: string; mime: string } | null>(null);
   const [teamStatuses, setTeamStatuses] = useState<AgentStatus[]>([]);
+  // Team panel visibility: the Multi-Agent button opens it (it stays open
+  // during a run, and shows the 4 agents idle when no run is active).
+  const [showTeamPanel, setShowTeamPanel] = useState(false);
   const [lastUsage, setLastUsage] = useState<any>(null);
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -521,15 +524,29 @@ export default function App() {
       const isRateLimit = errMsg.includes('429') || /rate limit|free-models-per-day|quota/i.test(errMsg);
       const isAuthFailure = Boolean(err?.isAuthError) && !isRateLimit;
 
+      // One reply bubble per request: a failed request gets its OWN model
+      // bubble (isError), appended — never merged into the previous reply
+      // and never swallowed by the single error banner (live QA 2026-11-27:
+      // two failed requests collapsed into one display).
+      let replyText: string;
       if (isRateLimit) {
-        setError(errMsg || "ফ্রি মডেলের দৈনিক লিমিট (Rate Limit) পূর্ণ হয়েছে। অনুগ্রহ করে একটু অপেক্ষা করুন অথবা 🔑 মেনুতে নতুন API কী যুক্ত করুন।");
+        replyText = errMsg || "ফ্রি মডেলের দৈনিক লিমিট (Rate Limit) পূর্ণ হয়েছে। অনুগ্রহ করে একটু অপেক্ষা করুন অথবা 🔑 মেনুতে নতুন API কী যুক্ত করুন।";
+        setError(replyText);
         setCooldown(30);
       } else if (isAuthFailure || errMsg.includes('কার্যকর API Key') || errMsg.includes('UNAUTHENTICATED')) {
-        setError(errMsg || "বৈধ API Key প্রয়োজন। অনুগ্রহ করে 🔑 API Keys মেনুতে আপনার Google AI Studio বা OpenRouter API Key যুক্ত করুন।");
+        replyText = errMsg || "বৈধ API Key প্রয়োজন। অনুগ্রহ করে 🔑 API Keys মেনুতে আপনার Google AI Studio বা OpenRouter API Key যুক্ত করুন।";
+        setError(replyText);
         setShowSecretsModal(true);
       } else {
-        setError(errMsg || "একটি সাময়িক সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।");
+        replyText = errMsg || "একটি সাময়িক সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।";
+        setError(replyText);
       }
+      setMessages(prev => [...prev, {
+        role: 'model',
+        parts: [{ text: replyText }],
+        isError: true,
+        isFinished: true,
+      }]);
     } finally {
       setIsLoading(false);
       setPendingQuestion(null);
@@ -689,6 +706,7 @@ export default function App() {
           setOutputFormat={setOutputFormat}
           multiAgent={multiAgent}
           setMultiAgent={setMultiAgent}
+          onToggleTeamPanel={() => setShowTeamPanel(v => !v)}
           onAnalyzeError={handleAnalyzeError}
         />
 
@@ -858,7 +876,7 @@ export default function App() {
         </header>
 
         {/* Multi-agent team status (Planner → Coder → Reviewer → Tester) */}
-        {teamStatuses.length > 0 && (
+        {(showTeamPanel || teamStatuses.length > 0) && (
           <div className="px-6 pt-3">
             <TeamStatus statuses={teamStatuses} />
           </div>
@@ -944,7 +962,7 @@ export default function App() {
                 )}
                 <div className={cn(
                   "px-4 py-3 rounded-2xl text-sm leading-relaxed",
-                  m.role === 'user' ? "bg-slate-800 text-white rounded-tr-none" : "bg-slate-900 border border-slate-800 rounded-tl-none"
+                  m.role === 'user' ? "bg-slate-800 text-white rounded-tr-none" : m.isError ? "bg-rose-500/10 border border-rose-500/30 text-rose-200 rounded-tl-none" : "bg-slate-900 border border-slate-800 rounded-tl-none"
                 )}>
                   {m.parts[0].text}
                 </div>

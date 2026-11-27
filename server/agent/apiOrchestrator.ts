@@ -6,7 +6,7 @@ import { serverTools, executeServerTool, type ToolExecutionContext } from "./gem
 import { matchSkillsForPrompt } from "./skillsRegistry.ts";
 import { autoDeployWebsiteFromText, getNexusSystemInstruction, prepareGeminiHistoryAndLastMessage, type SystemInstructionOptions } from "./websiteDeployer.ts";
 import { routeTurnModel, turnReasoningEffort, classifyTask, pickPlanningEffort, planningChain, cheapChain, codingChain, chatOnce, chatChain, type PlanningEffort } from "./llmClient.ts";
-import { getRouterApiKey } from "../router/keys.ts";
+import { getRouterApiKey, NO_PROVIDER_KEYS_MESSAGE, NO_PROVIDER_KEYS_CODE } from "../router/keys.ts";
 import { decideIntent, CASUAL_SYSTEM } from "./intentGate.ts";
 import { matchDirectCommand, getCachedToolResult, setCachedToolResult } from "./directTools.ts";
 import { readUserMemory, saveChatTurn, loadChat, listProjects, listChats } from "./memory.ts";
@@ -479,7 +479,22 @@ export async function loadSecrets(): Promise<KeyConfig[]> {
   const envGeminiKeys = buildEnvGeminiKeys();
   const envGroqKeys = buildEnvGroqKeys();
   const envOpenRouterKeys = await buildEnvOpenRouterKeys();
-  const head = [...(envKey ? [envKey] : []), ...envGeminiKeys, ...envGroqKeys, ...envOpenRouterKeys];
+  // The embedded-router pseudo-key (env-freellmapi) is NOT a real provider
+  // key — with no external FreeLLMAPI key it just carries the internal
+  // router key. Including it unconditionally made a keyless server claim
+  // "1 live key" in the pool UI and let the agent loop run with no key at
+  // all (live QA 2026-11-27). Include it only when at least one REAL
+  // provider key exists anywhere (env lists, an external FreeLLMAPI key,
+  // or a persisted dashboard key with a real value). With no real key the
+  // pool is empty, the agent loop's no-keys early return fires, and the
+  // pool UI honestly shows 0 live / 0 keys.
+  const hasRealProviderKey =
+    envGeminiKeys.length > 0 ||
+    envGroqKeys.length > 0 ||
+    envOpenRouterKeys.length > 0 ||
+    Boolean((process.env.FREE_LLM_API_KEY || '').trim()) ||
+    withoutEnv.some((k) => (k.apiKey || '').trim() && k.apiKey !== getRouterApiKey());
+  const head = [...(envKey && hasRealProviderKey ? [envKey] : []), ...envGeminiKeys, ...envGroqKeys, ...envOpenRouterKeys];
   return head.length ? [...head, ...withoutEnv] : withoutEnv;
 }
 
@@ -2508,7 +2523,22 @@ export async function handleOrchestratedChat(
       sendEvent({ type: 'usage_summary', usage: totals });
       res.end();
       return;
-    } catch {
+    } catch (err: any) {
+      // No provider keys at all: answer in Bengali and stop — do NOT fall
+      // through to the agent loop (it would fail the same way, and the user
+      // would see a misleading rotation error instead of the real cause).
+      const msg = String(err?.message || '');
+      if (err?.code === NO_PROVIDER_KEYS_CODE || msg.includes('কোনো API key বসানো হয়নি')) {
+        sendEvent({ type: 'text', text: NO_PROVIDER_KEYS_MESSAGE });
+        finalAssistantText = NO_PROVIDER_KEYS_MESSAGE;
+        sendEvent({ type: 'done', fullText: NO_PROVIDER_KEYS_MESSAGE, direct: true, apiCalls: 0 });
+        await saveChatTurn(sessionId || 'default', initialLastMessage, NO_PROVIDER_KEYS_MESSAGE).catch(() => {});
+        const totals = usageTotals(usageLedger);
+        recordTurnUsage(sessionId || 'default', totals);
+        sendEvent({ type: 'usage_summary', usage: totals });
+        res.end();
+        return;
+      }
       // Direct answer failed — fall through to the agent loop with tools off.
     }
   }
@@ -3274,7 +3304,13 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
     let finalUserError = "⚠️ প্রোভাইডার সাময়িকভাবে সাড়া দিচ্ছে না। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।";
     let finalIsAuthError = false;
 
-    if (sawDailyFreeLimit) {
+    // No provider keys at all (the router had nothing to call): say so in
+    // Bengali and point at the Keys tab — never wrap the raw rotation error
+    // ("No openrouter key is configured; trying ...") in the reply.
+    if (/কোনো API key বসানো হয়নি|NO_PROVIDER_KEYS/i.test(lastFailureMessage) || /No .* key is configured/i.test(lastFailureMessage)) {
+      finalUserError = NO_PROVIDER_KEYS_MESSAGE;
+      finalIsAuthError = true;
+    } else if (sawDailyFreeLimit) {
       finalUserError = "⚠️ আপনার OpenRouter ফ্রি কী-টির দৈনিক লিমিট (free-models-per-day) শেষ হয়ে গেছে। চালু রাখতে 🔑 API Keys মেনুতে নতুন একটি Gemini / Groq / OpenRouter কী যুক্ত করুন।";
     } else if (sawRateLimit && !sawAuthError) {
       finalUserError = "⚠️ বর্তমান API কী-গুলোর per-minute রেট লিমিট পূর্ণ হয়েছে। অনুগ্রহ করে ৩০-৬০ সেকেন্ড অপেক্ষা করুন অথবা 🔑 মেনুতে বিকল্প কী যুক্ত করুন।";

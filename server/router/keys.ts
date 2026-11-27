@@ -60,6 +60,20 @@ let keys: RouterKey[] = [];
 let keysLoaded = false;
 let rrIndex = 0;
 
+// No provider keys at all: the chat must say so in Bengali and point at
+// the Keys tab — never rotate through keyless providers and never offer a
+// misleading "trying <next model>" error (live QA 2026-11-27: a keyless
+// server offered baidu/ernie and failed with a confusing message).
+export const NO_PROVIDER_KEYS_MESSAGE =
+  'কোনো API key বসানো হয়নি। Keys ট্যাবে Gemini, Groq বা OpenRouter-এর key বসান, তারপর আবার চেষ্টা করুন।';
+export const NO_PROVIDER_KEYS_CODE = 'NO_PROVIDER_KEYS';
+
+/** True when at least one real provider key is configured (env or dashboard). */
+export async function hasAnyRouterKey(): Promise<boolean> {
+  await loadKeys();
+  return keys.length > 0;
+}
+
 // The router's own API key (protects /v1/*): env override or boot-generated.
 const ROUTER_API_KEY = process.env.ROUTER_API_KEY || `router-${crypto.randomBytes(24).toString('hex')}`;
 export function getRouterApiKey(): string {
