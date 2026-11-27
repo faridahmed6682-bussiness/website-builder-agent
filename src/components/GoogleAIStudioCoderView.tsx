@@ -586,10 +586,10 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
 
       {/* Top Header matching Google AI Studio screenshot */}
       <header className="h-14 border-b border-slate-800/80 flex items-center justify-between px-3 sm:px-4 bg-[#131314] sticky top-0 z-30 flex-shrink-0 gap-2">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={onOpenDrawer}
-            className="p-1.5 -ml-1 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+            className="p-1.5 -ml-1 max-sm:min-h-10 max-sm:min-w-10 max-sm:p-2 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer shrink-0 flex items-center justify-center"
             title="Menu"
           >
             <Menu className="w-5 h-5" />
@@ -600,7 +600,7 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {/* Mobile & Desktop PWA Install App Button */}
           <PWAInstallButton />
           <GitHubConnectButton />
