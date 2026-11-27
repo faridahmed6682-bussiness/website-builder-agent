@@ -2266,7 +2266,7 @@ async function runGeminiAgentLoop(
           return {
             functionResponse: {
               name: call.name,
-              response: { output: toolResult }
+              response: { output: truncateToolOutput(toolResult) }
             }
           };
         })
@@ -2283,7 +2283,7 @@ async function runGeminiAgentLoop(
       for (const tc of textParsedCalls) {
         if (FILE_WRITE_TOOL_NAMES.has(tc.name)) didMutateFiles = true;
         const toolResult = await executeToolWithLiveEvents(tc.name, tc.args, sendEvent, execCtx);
-        results.push({ tool: tc.name, result: toolResult });
+        results.push({ tool: tc.name, result: truncateToolOutput(toolResult) });
       }
       nextPayload = `[TOOL EXECUTION RESULTS]:\n${JSON.stringify(results)}\n\nContinue immediately using real function calls (write_to_file / replace_file_content) to write all requested code into workspace files. Do NOT output tool_calls JSON in chat.`;
       continue;
