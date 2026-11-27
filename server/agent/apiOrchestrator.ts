@@ -2,7 +2,7 @@ import { GoogleGenAI, Type, type FunctionDeclaration } from "@google/genai";
 import fs from "fs/promises";
 import path from "path";
 import type { Response } from "express";
-import { serverTools, executeServerTool, type ToolExecutionContext } from "./geminiService.ts";
+import { serverTools, executeServerTool, CORE_TOOL_NAMES, filterCoreTools, type ToolExecutionContext } from "./geminiService.ts";
 import { matchSkillsForPrompt } from "./skillsRegistry.ts";
 import { autoDeployWebsiteFromText, getNexusSystemInstruction, prepareGeminiHistoryAndLastMessage, type SystemInstructionOptions } from "./websiteDeployer.ts";
 import { routeTurnModel, turnReasoningEffort, classifyTask, pickPlanningEffort, planningChain, cheapChain, codingChain, chatOnce, chatChain, type PlanningEffort } from "./llmClient.ts";
@@ -1130,102 +1130,19 @@ async function executeToolWithLiveEvents(
   return toolResult;
 }
 
+// STEP 4 (P0): KNOWN_TOOL_NAMES deliberately still covers ALL 98
+// serverTools, not just the 81 core tools. It gates the TEXT-JSON fallback
+// (extractAndStripTextToolCalls), where the model may name a tool the
+// declarations did not offer — the OpenAI path already behaved this way,
+// and the 17 non-core tools keep working executors. Only the native
+// declarations sent per call are trimmed (filterCoreTools).
 const KNOWN_TOOL_NAMES = new Set(
   serverTools.map((t) => t.name).filter((n): n is string => Boolean(n))
 );
 
-const OPENAI_CORE_TOOL_NAMES = new Set([
-  'read_skill',
-  'analyze_project',
-  'view_file',
-  'list_dir',
-  'grep_search',
-  'find_by_name',
-  'write_to_file',
-  'replace_file_content',
-  'multi_replace_file_content',
-  'install_applet_package',
-  'compile_applet',
-  'lint_applet',
-  'run_command',
-  'omo_coordinate',
-  'debug_error_analysis',
-  'code_execution_sandbox',
-  'set_up_firebase',
-  'deploy_firebase',
-  'search_web',
-  'webFetch',
-  'generate_image',
-  'restart_dev_server',
-  'ask_question',
-  'verify_live_preview',
-  'cloudsql_execute_sql',
-  // Hardening (2026-11-27): high-value working tools the model could not
-  // call before — git inspection, multi-read, diff, secret scan, file move/
-  // delete, plan registration, background-task management, project installs.
-  // NOTE: 'schedule' is deliberately NOT here — its implementation only
-  // returns a message and sets no timer (nothing ever fires). Real
-  // scheduling is queue_job + remind (Nexus scheduler).
-  'plan',
-  'manage_task',
-  'git_status',
-  'git_diff',
-  'read_multiple_files',
-  'compute_file_diff',
-  'detect_secrets',
-  'move',
-  'delete_file',
-  'delete_dir',
-  'install_applet_dependencies',
-  // Agent memory / lessons / jobs
-  'save_memory',
-  'read_memory',
-  'save_lesson',
-  'queue_job',
-  // Nexus tools (37) — every one has a working implementation in
-  // server/nexusTools.ts and is delegated in geminiService.executeServerTool.
-  'github_push',
-  'github_create_repo',
-  'github_repos',
-  'github_file',
-  'github_issues',
-  'github_prs',
-  'github_create_issue',
-  'github_create_pr',
-  'github_pull_request',
-  'github_actions',
-  'github_release',
-  'github_code_search',
-  'github_import',
-  'build_page',
-  'build_site',
-  'deploy_site',
-  'web_search',
-  'read_page',
-  'generate_image_pollinations',
-  'file_grep',
-  'local_rag',
-  'vector_store',
-  'public_api_discovery',
-  'free_tier_directory',
-  'desh_api',
-  'browse_task',
-  'browse_job',
-  'browse_vision',
-  'browse_resume',
-  'gmail_list',
-  'gmail_search',
-  'gmail_send',
-  'gmail_draft',
-  'calendar_list',
-  'calendar_create',
-  'drive_list',
-  'docs_create',
-  'docs_read',
-  'remind',
-  'goals',
-  'scheduled_browse',
-]);
+// STEP 4 (P0): the OpenAI path's tool set is the shared CORE_TOOL_NAMES
+// (geminiService.ts) — the Gemini path now sends exactly the same 81.
+const OPENAI_CORE_TOOL_NAMES = CORE_TOOL_NAMES;
 
 interface PendingQuestionEntry {
   resolve: (val: { answers: Record<string, string[]>; skipped?: boolean; notes?: string }) => void;
@@ -1456,7 +1373,7 @@ function convertSchemaToJsonSchema(schema: any): any {
   return out;
 }
 
-function toOpenAITools(declarations: FunctionDeclaration[]): any[] {
+export function toOpenAITools(declarations: FunctionDeclaration[]): any[] {
   return declarations
     .filter((fn) => fn.name && OPENAI_CORE_TOOL_NAMES.has(fn.name))
     .map((fn) => ({
@@ -2207,7 +2124,10 @@ The server will execute it immediately and send back the result so you can conti
   return committedText;
 }
 
-async function runGeminiAgentLoop(
+// Exported for the keyless proof (scripts/tool-schema-proof.mts), which
+// drives the loop with a fake Gemini client and records the tools offered
+// per round.
+export async function runGeminiAgentLoop(
   client: GoogleGenAI,
   targetModel: string,
   mode: string,
@@ -2221,11 +2141,17 @@ async function runGeminiAgentLoop(
   allowTools: boolean = true,
   usageLedger?: TurnUsage
 ): Promise<string> {
+  // Hoisted so the last-round tool-free request (below) carries the exact
+  // same system instruction the chat was created with — a per-request
+  // config replaces the chat config wholesale, it does not inherit it.
+  const systemInstruction = getNexusSystemInstruction(mode, systemOptions);
   const chat = client.chats.create({
     model: targetModel,
     config: {
-      systemInstruction: getNexusSystemInstruction(mode, systemOptions),
-      ...(allowTools ? { tools: [{ functionDeclarations: serverTools }] } : {}),
+      systemInstruction,
+      // STEP 4 (P0): offer only the 81 core tools, never all 98
+      // serverTools — same set the OpenAI-compatible loop sends.
+      ...(allowTools ? { tools: [{ functionDeclarations: filterCoreTools(serverTools) }] } : {}),
     },
     history
   });
@@ -2240,7 +2166,18 @@ async function runGeminiAgentLoop(
 
   for (let round = 0; round < maxRounds; round++) {
     await paceAndTrackKeyRound(trackedKey, round, sendEvent);
-    const currentResult = await chat.sendMessageStream({ message: nextPayload });
+    // STEP 4 (P0): the final round is the summary round — the model only
+    // writes its closing text, and any tool call it made here would be
+    // executed blind (its result is discarded when the loop exits), so no
+    // tools are offered on it at all. A per-request config replaces the
+    // chat config, hence systemInstruction is carried over explicitly.
+    // (No per-phase subset on earlier rounds: the loop has no distinct
+    // planning phase, and restricting round 0 to read/planning tools
+    // would block turns that legitimately write on round 0.)
+    const isFinalRound = allowTools && round === maxRounds - 1;
+    const currentResult = isFinalRound
+      ? await chat.sendMessageStream({ message: nextPayload, config: { systemInstruction } })
+      : await chat.sendMessageStream({ message: nextPayload });
     let roundText = '';
     const functionCalls: any[] = [];
 

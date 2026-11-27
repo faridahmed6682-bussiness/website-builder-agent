@@ -932,6 +932,131 @@ export const serverTools: FunctionDeclaration[] = [
   ...nexusTools,
 ];
 
+// ---------------------------------------------------------------------------
+// STEP 4 (P0): the single shared tool allowlist for BOTH agent loops.
+// The Gemini path used to send all 98 serverTools declarations on every
+// call (~10,400 tokens of schema); the OpenAI-compatible path only ever
+// sent the 81 tools below (toOpenAITools, apiOrchestrator.ts). Both loops
+// now filter through CORE_TOOL_NAMES, so the Gemini path matches the
+// OpenAI path exactly. The 17 tools NOT in this set are excluded from
+// both loops' native declarations:
+//   - Legacy aliases — canonical tool kept: fileRead (view_file),
+//     fileWrite (write_to_file), fileEdit (replace_file_content), bash
+//     (run_command). Same executor, duplicate schema cost.
+//   - Claw harness — claw_doctor, claw_status, claw_acp, claw_prompt,
+//     omx_protocol, clawhip_router, lazycodex_runner. (The
+//     ultraworkers-claw-harness skill text still names them, as it
+//     already did on the OpenAI path.)
+//   - Stubs / thin wrappers with a kept canonical tool: figma_import and
+//     focus_mode return a canned message only; set_up_oauth /
+//     remove_oauth only edit a local .oauth-config.json;
+//     cloudsql_update_schema only verifies/writes drizzle boilerplate
+//     (cloudsql_execute_sql is kept).
+//   - schedule: remind + queue_job cover scheduling on both paths. (Its
+//     executor was fixed 2026-11-27 to store a real reminder, so the old
+//     "sets no timer" reason no longer applies — the exclusion stands
+//     because the capability is already covered, not because it is broken.)
+// Executors for all 17 stay in executeServerTool, and KNOWN_TOOL_NAMES
+// (apiOrchestrator.ts) still accepts them in the text-JSON fallback —
+// exactly as the OpenAI path already did. Only the per-call declaration
+// cost is removed; no capability is deleted.
+// ---------------------------------------------------------------------------
+export const CORE_TOOL_NAMES: Set<string> = new Set([
+  'read_skill',
+  'analyze_project',
+  'view_file',
+  'list_dir',
+  'grep_search',
+  'find_by_name',
+  'write_to_file',
+  'replace_file_content',
+  'multi_replace_file_content',
+  'install_applet_package',
+  'compile_applet',
+  'lint_applet',
+  'run_command',
+  'omo_coordinate',
+  'debug_error_analysis',
+  'code_execution_sandbox',
+  'set_up_firebase',
+  'deploy_firebase',
+  'search_web',
+  'webFetch',
+  'generate_image',
+  'restart_dev_server',
+  'ask_question',
+  'verify_live_preview',
+  'cloudsql_execute_sql',
+  // Hardening (2026-11-27): high-value working tools the model could not
+  // call before — git inspection, multi-read, diff, secret scan, file move/
+  // delete, plan registration, background-task management, project installs.
+  'plan',
+  'manage_task',
+  'git_status',
+  'git_diff',
+  'read_multiple_files',
+  'compute_file_diff',
+  'detect_secrets',
+  'move',
+  'delete_file',
+  'delete_dir',
+  'install_applet_dependencies',
+  // Agent memory / lessons / jobs
+  'save_memory',
+  'read_memory',
+  'save_lesson',
+  'queue_job',
+  // Nexus tools (37) — every one has a working implementation in
+  // server/nexusTools.ts and is delegated in geminiService.executeServerTool.
+  'github_push',
+  'github_create_repo',
+  'github_repos',
+  'github_file',
+  'github_issues',
+  'github_prs',
+  'github_create_issue',
+  'github_create_pr',
+  'github_pull_request',
+  'github_actions',
+  'github_release',
+  'github_code_search',
+  'github_import',
+  'build_page',
+  'build_site',
+  'deploy_site',
+  'web_search',
+  'read_page',
+  'generate_image_pollinations',
+  'file_grep',
+  'local_rag',
+  'vector_store',
+  'public_api_discovery',
+  'free_tier_directory',
+  'desh_api',
+  'browse_task',
+  'browse_job',
+  'browse_vision',
+  'browse_resume',
+  'gmail_list',
+  'gmail_search',
+  'gmail_send',
+  'gmail_draft',
+  'calendar_list',
+  'calendar_create',
+  'drive_list',
+  'docs_create',
+  'docs_read',
+  'remind',
+  'goals',
+  'scheduled_browse',
+]);
+
+/** STEP 4 (P0): the declarations a loop may offer the model natively —
+ * the 81 core tools. Pass the result, never raw serverTools, to any chat. */
+export function filterCoreTools(declarations: FunctionDeclaration[]): FunctionDeclaration[] {
+  return declarations.filter((fn) => fn.name && CORE_TOOL_NAMES.has(fn.name));
+}
+
 export async function runCodeInSandbox(
   language: string,
   code: string,
@@ -2685,7 +2810,9 @@ export async function handleServerGeminiChat(req: { messages: any[]; mode?: stri
       model: modelName,
       config: {
         systemInstruction: getNexusSystemInstruction(mode),
-        tools: [{ functionDeclarations: serverTools }],
+        // STEP 4 (P0): offer only the 81 core tools, never all 98
+        // serverTools — same set the OpenAI-compatible loop sends.
+        tools: [{ functionDeclarations: filterCoreTools(serverTools) }],
       },
       history,
     });
