@@ -25,7 +25,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
-import { classifyRateLimit, limitLabel, type RateLimitKind } from '../agent/modelChain.ts';
+import { classifyRateLimit, limitLabel, parseRetryAfter, type RateLimitKind } from '../agent/modelChain.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const KEYS_FILE = path.join(DATA_DIR, 'router-keys.json');
@@ -207,11 +207,11 @@ export async function removeRouterKey(id: string): Promise<boolean> {
   return true;
 }
 
-/** Round-robin pick of a healthy key for a provider (skips cooldowns). Falls back to the synced secrets pool when the router pool has no key for the provider. */
-export async function selectRouterKey(provider: RouterProvider): Promise<RouterKey | null> {
+/** Round-robin pick of a healthy key for a provider (skips cooldowns). Falls back to the synced secrets pool when the router pool has no key for the provider. `excludeIds` skips keys already tried this turn, so the caller can rotate through every key for one model. */
+export async function selectRouterKey(provider: RouterProvider, excludeIds?: Set<string>): Promise<RouterKey | null> {
   await loadKeys();
   const now = Date.now();
-  const pool = keys.filter((k) => k.provider === provider);
+  const pool = keys.filter((k) => k.provider === provider && !(excludeIds?.has(k.id)));
   if (pool.length) {
     const healthy = pool.filter((k) => k.cooldownUntil <= now);
     const candidates = healthy.length ? healthy : pool;
@@ -224,7 +224,7 @@ export async function selectRouterKey(provider: RouterProvider): Promise<RouterK
   // No router-pool key for this provider — use a key from the synced
   // secrets pool (added in the "Free API Keys" panel). Same least-used
   // rotation, skipping keys on a cooldown recorded by a recent failure.
-  const secrets = (await readSecretsPool()).filter((k) => k.provider === provider);
+  const secrets = (await readSecretsPool()).filter((k) => k.provider === provider && !(excludeIds?.has(k.id)));
   if (!secrets.length) return null;
   const healthySecrets = secrets.filter((k) => (secretsCooldownUntil.get(k.id) || 0) <= now);
   const candidates = healthySecrets.length ? healthySecrets : secrets;
@@ -242,6 +242,38 @@ export async function selectRouterKey(provider: RouterProvider): Promise<RouterK
   };
 }
 
+/** ALL keys for a provider (router pool + synced secrets pool), healthy
+ * first, least-used first — the per-model inner key loop in
+ * routeChatCompletion iterates this list so every key is tried for one
+ * model before the chain drops to the next model. Values are never exposed
+ * outside the server; this is a server-internal accessor. */
+export async function listRouterKeys(provider: RouterProvider): Promise<RouterKey[]> {
+  await loadKeys();
+  const now = Date.now();
+  const out: RouterKey[] = [];
+  const seen = new Set<string>();
+  for (const k of keys.filter((x) => x.provider === provider)) {
+    if (seen.has(k.key)) continue;
+    seen.add(k.key);
+    out.push(k);
+  }
+  for (const s of (await readSecretsPool()).filter((x) => x.provider === provider)) {
+    if (seen.has(s.apiKey)) continue;
+    seen.add(s.apiKey);
+    out.push({
+      id: s.id,
+      provider: s.provider,
+      name: s.name || `${s.provider} key (secrets)`,
+      key: s.apiKey,
+      source: 'secrets',
+      cooldownUntil: secretsCooldownUntil.get(s.id) || 0,
+      uses: secretsUses.get(s.id) || 0,
+    });
+  }
+  out.sort((a, b) => (a.cooldownUntil > now ? 1 : 0) - (b.cooldownUntil > now ? 1 : 0) || a.uses - b.uses);
+  return out;
+}
+
 export async function recordRouterKeyFailure(keyId: string, status?: number, retryAfter?: string | null, message?: string | null): Promise<void> {
   await loadKeys();
   const k = keys.find((x) => x.id === keyId);
@@ -257,8 +289,10 @@ export async function recordRouterKeyFailure(keyId: string, status?: number, ret
         const msToMidnight = (24 * 60 * 60 * 1000) - ((pt.getHours() * 3600 + pt.getMinutes() * 60 + pt.getSeconds()) * 1000 + pt.getMilliseconds());
         secretsCooldownUntil.set(keyId, Date.now() + Math.max(msToMidnight, 60_000));
       } else {
-        const ra = retryAfter ? parseInt(retryAfter, 10) : NaN;
-        secretsCooldownUntil.set(keyId, Date.now() + Math.max(65, Number.isFinite(ra) ? ra : 0) * 1000);
+        // parseRetryAfter (not parseInt): an HTTP-date Retry-After parses
+        // as NaN under parseInt and silently fell back to the 65 s floor.
+        const ra = parseRetryAfter(retryAfter);
+        secretsCooldownUntil.set(keyId, Date.now() + Math.max(65, ra ?? 0) * 1000);
       }
     } else {
       secretsCooldownUntil.set(keyId, Date.now() + 60_000);
@@ -267,7 +301,7 @@ export async function recordRouterKeyFailure(keyId: string, status?: number, ret
   }
   if (status === 429) {
     const kind = classifyRateLimit(status, message);
-    const ra = retryAfter ? parseInt(retryAfter, 10) : NaN;
+    const ra = parseRetryAfter(retryAfter);
     k.limitKind = kind;
     if (kind === 'rpd') {
       // Daily limit — park until midnight Pacific (same rule as the chain).
@@ -276,9 +310,9 @@ export async function recordRouterKeyFailure(keyId: string, status?: number, ret
       const msToMidnight = (24 * 60 * 60 * 1000) - ((pt.getHours() * 3600 + pt.getMinutes() * 60 + pt.getSeconds()) * 1000 + pt.getMilliseconds());
       k.cooldownUntil = Date.now() + Math.max(msToMidnight, 60_000);
     } else {
-      k.cooldownUntil = Date.now() + Math.max(65, Number.isFinite(ra) ? ra : 0) * 1000;
+      k.cooldownUntil = Date.now() + Math.max(65, ra ?? 0) * 1000;
     }
-    k.lastError = limitLabel(kind, Number.isFinite(ra) ? ra : undefined);
+    k.lastError = limitLabel(kind, ra ?? undefined);
   } else {
     k.cooldownUntil = Date.now() + 60_000;
     k.lastError = message ? String(message).slice(0, 120) : `HTTP ${status || 'error'}`;

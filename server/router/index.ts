@@ -19,7 +19,6 @@ import path from 'path';
 import type { Express, Request, Response as ExpressResponse } from 'express';
 import {
   getChainForTask,
-  nextAfterFailure,
   recordModelFailure,
   recordModelSuccess,
   noteModelAttempt,
@@ -29,7 +28,7 @@ import {
   isModelExcluded,
   type TaskKind,
 } from '../agent/modelChain.ts';
-import { selectRouterKey, recordRouterKeyFailure, recordRouterKeySuccess, routerKeyStatus, getRouterApiKey, hasAnyRouterKey, NO_PROVIDER_KEYS_MESSAGE, NO_PROVIDER_KEYS_CODE, type RouterProvider } from './keys.ts';
+import { listRouterKeys, recordRouterKeyFailure, recordRouterKeySuccess, routerKeyStatus, getRouterApiKey, hasAnyRouterKey, NO_PROVIDER_KEYS_MESSAGE, NO_PROVIDER_KEYS_CODE, type RouterProvider } from './keys.ts';
 import { callProvider, type RouterChatRequest } from './providers.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -134,6 +133,20 @@ export interface RoutedResult {
   keyName: string;
 }
 
+/** The task this turn is really doing, derived from the user messages —
+ * the chain is quality-ordered per task, so a hardcoded 'coding' sent chat
+ * turns down the coding chain and vice versa. */
+function taskOfRequest(req: RouterChatRequest): TaskKind {
+  const text = (req.messages || [])
+    .filter((m: any) => m?.role === 'user')
+    .map((m: any) => (typeof m?.content === 'string' ? m.content : ''))
+    .join('\n')
+    .toLowerCase();
+  if (/(build|make|create|website|web ?site|web ?app|app|page|landing|shop|store|dashboard|portfolio|game|code|coding|fix|bug|error|debug|deploy|html|css|javascript|typescript|react|component|function|api|database|firebase|button|form|layout|design|clone|repo|github|preview|edit|change|update|add|remove|style|responsive|pwa|install)/.test(text)) return 'coding';
+  if (/(why|explain|compare|versus|analyse|analyze|reason|think|plan|decide|which is better|pros and cons|trade-?off|proof|calculate|math|research|strategy|should i|what if|evaluate|review)/.test(text)) return 'planning';
+  return 'chat';
+}
+
 export async function routeChatCompletion(req: RouterChatRequest): Promise<RoutedResult> {
   await loadUsage();
   // NO KEYS AT ALL: answer immediately in Bengali and point at the Keys
@@ -144,67 +157,94 @@ export async function routeChatCompletion(req: RouterChatRequest): Promise<Route
     err.code = NO_PROVIDER_KEYS_CODE;
     throw err;
   }
+  const task = taskOfRequest(req);
   let model = req.model || 'auto:balanced';
   if (model.startsWith('auto:')) model = resolveAutoModel(model);
   let lastErr = new Error('No provider key is configured. Add Gemini / Groq / OpenRouter keys in the Keys tab or as env vars (GEMINI_API_KEYS / GROQ_API_KEYS / OPENROUTER_API_KEYS).');
-  for (let attempt = 0; attempt < 5; attempt++) {
-    // Excluded models (paid-only, retired, Baidu/Ernie) are NEVER attempted
-    // — skip to the next chain entry without calling any provider.
-    if (isModelExcluded(model)) {
-      const next = nextAfterFailure(model, 'coding');
-      if (!next) break;
-      model = next.model;
-      continue;
+
+  // Chain for this turn, built ONCE (not re-derived per failure):
+  // Gemini first — the user's 10 Gemini keys are the deepest free pool, and
+  // the old quality-ordered chain starved Gemini behind OpenRouter :free
+  // models — then the full cross-provider chain, de-duplicated. Bound by
+  // chain length (40), not a 5-attempt cap: keyless/excluded models are
+  // pre-filtered OUT, so they can no longer burn attempts.
+  const keyedProviders = new Set<RouterProvider>();
+  for (const p of ['gemini', 'groq', 'openrouter'] as RouterProvider[]) {
+    if ((await listRouterKeys(p)).length) keyedProviders.add(p);
+  }
+  const ordered: string[] = [];
+  const seenModels = new Set<string>();
+  const pushChain = (entries: Array<{ model: string }>) => {
+    for (const e of entries) {
+      if (e.model.startsWith('auto:')) continue; // router pseudo-models, not callable models
+      if (seenModels.has(e.model) || isModelExcluded(e.model)) continue;
+      if (!keyedProviders.has(providerOfModel(e.model))) continue;
+      seenModels.add(e.model);
+      ordered.push(e.model);
     }
+  };
+  pushChain(getChainForTask(task, 'gemini', 12));
+  pushChain(getChainForTask(task, undefined, 40));
+  // The explicitly requested model goes first when it is keyed and live.
+  if (!isModelExcluded(model) && keyedProviders.has(providerOfModel(model)) && !seenModels.has(model)) {
+    ordered.unshift(model);
+  } else if (seenModels.has(model)) {
+    ordered.splice(ordered.indexOf(model), 1);
+    ordered.unshift(model);
+  }
+  if (!ordered.length) {
+    throw new Error('No keyed provider has a live model for this request. Add a key for Gemini, Groq or OpenRouter in the Keys tab.');
+  }
+
+  // Walk the chain. Per model, iterate ALL keys for its provider (inner key
+  // loop): a 429 rotates to the next key, SAME model — only when every key
+  // for the model is exhausted (or the model itself is unavailable, 404/400)
+  // does the loop drop to the next model. No attempt counter is burned by
+  // skips: the chain was pre-filtered, so every entry here is attempted.
+  for (const chainModel of ordered) {
+    model = chainModel;
     const provider = providerOfModel(model);
-    const key = await selectRouterKey(provider);
-    if (!key) {
-      // No key for this provider — try the next model in the chain.
-      const next = nextAfterFailure(model, 'coding');
-      if (!next) break;
-      model = next.model;
-      lastErr = new Error(`No ${provider} key is configured; trying ${model}.`);
-      continue;
-    }
-    noteModelAttempt(model, key.id);
-    try {
-      const res = await callProvider(provider, model, req, key.key);
-      if (res.ok) {
-        recordModelSuccess(model);
-        await recordRouterKeySuccess(key.id);
-        if (!req.stream) {
-          // Non-stream: read the JSON, record real usage, return a fresh Response.
-          const text = await res.text();
-          try {
-            const body = JSON.parse(text);
-            const u = body?.usage;
-            if (u && typeof u.prompt_tokens === 'number') {
-              recordUsage(model, u.prompt_tokens, u.completion_tokens || 0);
-            } else {
-              recordUsage(model, 0, 0);
-            }
-          } catch { recordUsage(model, 0, 0); }
-          return { response: new Response(text, { status: res.status, headers: { 'Content-Type': 'application/json' } }), model, provider, keyName: key.name };
+    const keysForModel = await listRouterKeys(provider);
+    if (!keysForModel.length) continue;
+    let modelUnavailable = false;
+    for (const key of keysForModel) {
+      noteModelAttempt(model, key.id);
+      try {
+        const res = await callProvider(provider, model, req, key.key);
+        if (res.ok) {
+          recordModelSuccess(model);
+          await recordRouterKeySuccess(key.id);
+          if (!req.stream) {
+            const text = await res.text();
+            try {
+              const body = JSON.parse(text);
+              const u = body?.usage;
+              if (u && typeof u.prompt_tokens === 'number') {
+                recordUsage(model, u.prompt_tokens, u.completion_tokens || 0);
+              } else {
+                recordUsage(model, 0, 0);
+              }
+            } catch { recordUsage(model, 0, 0); }
+            return { response: new Response(text, { status: res.status, headers: { 'Content-Type': 'application/json' } }), model, provider, keyName: key.name };
+          }
+          recordUsage(model, 0, 0);
+          return { response: res, model, provider, keyName: key.name };
         }
-        recordUsage(model, 0, 0);
-        return { response: res, model, provider, keyName: key.name };
+        const errText = await res.text().catch(() => '');
+        const retryAfter = res.headers.get('retry-after');
+        recordModelFailure(model, res.status, retryAfter, errText);
+        await recordRouterKeyFailure(key.id, res.status, retryAfter, errText);
+        lastErr = new Error(`Model ${model} failed (HTTP ${res.status}): ${errText.slice(0, 200)}`);
+        // Model unavailable for every key — stop burning keys on it.
+        if (res.status === 404 || res.status === 400) { modelUnavailable = true; break; }
+        // 429 / 5xx / other: try the next key, SAME model.
+      } catch (err: any) {
+        const isTimeout = err?.name === 'AbortError';
+        recordModelFailure(model, isTimeout ? 408 : undefined, null, err?.message || '');
+        await recordRouterKeyFailure(key.id, isTimeout ? 408 : undefined, null, err?.message || '');
+        lastErr = err;
       }
-      const errText = await res.text().catch(() => '');
-      const retryAfter = res.headers.get('retry-after');
-      recordModelFailure(model, res.status, retryAfter, errText);
-      await recordRouterKeyFailure(key.id, res.status, retryAfter, errText);
-      lastErr = new Error(`Model ${model} failed (HTTP ${res.status}): ${errText.slice(0, 200)}`);
-      const next = nextAfterFailure(model, 'coding');
-      if (!next) break;
-      model = next.model;
-    } catch (err: any) {
-      const isTimeout = err?.name === 'AbortError';
-      recordModelFailure(model, isTimeout ? 408 : undefined, null, err?.message || '');
-      await recordRouterKeyFailure(key.id, isTimeout ? 408 : undefined, null, err?.message || '');
-      lastErr = err;
-      const next = nextAfterFailure(model, 'coding');
-      if (!next) break;
-      model = next.model;
+      void modelUnavailable;
     }
   }
   throw lastErr;

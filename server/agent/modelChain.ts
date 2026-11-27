@@ -328,6 +328,58 @@ async function fetchOpenRouter(): Promise<Array<{ id: string; contextLength?: nu
     .map((m) => ({ id: m.id, contextLength: m.context_length }));
 }
 
+// Live Gemini discovery, reusing the proven endpoint/filter from
+// fetchLiveProviderModels (apiOrchestrator.ts): GET /v1beta/models with any
+// one Gemini key, keep only models that support generateContent, drop the
+// retired 1.0/1.5 generations, strip the `models/` prefix. Exclusion of
+// paid/media models happens at ingestion (isModelExcluded), not here.
+export async function fetchGeminiModels(apiKey: string): Promise<string[]> {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) throw new Error(`Gemini /v1beta/models HTTP ${res.status}`);
+  const body: any = await res.json();
+  const models: any[] = body?.models || [];
+  return models
+    .filter((m) => Array.isArray(m?.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+    .map((m) => String(m?.name || '').replace(/^models\//, ''))
+    .filter((id) => id && !id.includes('1.0') && !id.includes('1.5'))
+    .slice(0, 25);
+}
+
+// Keys for a provider from EVERY store the app uses — env lists, the
+// dashboard pool (data/router-keys.json) and the synced secrets pool
+// (.secrets.json) — not env alone. modelChain must not import keys.ts
+// (keys.ts imports classifyRateLimit from here), so the two JSON stores are
+// read directly. Values are used only to call Google's model list; they are
+// never logged or persisted.
+async function readProviderKeysFromStores(provider: 'gemini' | 'groq'): Promise<string[]> {
+  const out: string[] = [];
+  const add = (v: string | undefined) => {
+    const clean = (v || '').trim();
+    if (clean && !out.includes(clean)) out.push(clean);
+  };
+  if (provider === 'gemini') {
+    for (const k of (process.env.GEMINI_API_KEYS || '').split(',')) add(k);
+    add(process.env.GEMINI_API_KEY);
+  } else {
+    for (const k of (process.env.GROQ_API_KEYS || '').split(',')) add(k);
+    add(process.env.GROQ_API_KEY);
+  }
+  try {
+    const raw = await fs.readFile(path.join(DATA_DIR, 'router-keys.json'), 'utf-8');
+    for (const s of JSON.parse(raw) || []) if (s?.provider === provider) add(s.key);
+  } catch { /* no dashboard keys yet */ }
+  try {
+    const raw = await fs.readFile(path.join(process.cwd(), '.secrets.json'), 'utf-8');
+    for (const s of JSON.parse(raw) || []) {
+      if (s?.provider === provider && s?.isActive !== false) add(s.apiKey);
+    }
+  } catch { /* no secrets pool yet */ }
+  return out;
+}
+
 // Configured-provider free models.
 //
 // The live catalogs (FreeLLMAPI + OpenRouter) never list Gemini models —
@@ -357,12 +409,20 @@ const CONFIGURED_FREE_MODELS: Array<{ id: string; providers: string[]; envVar: s
   { id: 'qwen/qwen3.8-27b', providers: ['groq'], envVar: 'GROQ_API_KEYS' },
 ];
 
-function seedConfiguredProviderModels(): number {
+async function seedConfiguredProviderModels(skipGemini = false): Promise<number> {
   let added = 0;
-  const hasGemini = Boolean((process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || '').trim());
-  const hasGroq = Boolean((process.env.GROQ_API_KEYS || process.env.GROQ_API_KEY || '').trim());
+  // A provider counts as configured when a key exists in ANY store (env,
+  // dashboard Keys tab, or the synced secrets pool) — env-only gating hid
+  // Gemini entirely when the user's keys lived only in the dashboard.
+  const geminiKeys = await readProviderKeysFromStores('gemini');
+  const groqKeys = await readProviderKeysFromStores('groq');
+  const hasGemini = geminiKeys.length > 0;
+  const hasGroq = groqKeys.length > 0;
   for (const m of CONFIGURED_FREE_MODELS) {
     if (isModelExcluded(m.id)) continue;
+    // When the live Gemini fetch succeeded, its list is authoritative —
+    // the hardcoded Gemini ids are a fallback only, so skip them here.
+    if (skipGemini && m.envVar === 'GEMINI_API_KEYS') continue;
     const configured = (m.envVar === 'GEMINI_API_KEYS' && hasGemini) || (m.envVar === 'GROQ_API_KEYS' && hasGroq);
     if (!configured) continue;
     if (!catalog.has(m.id)) {
@@ -376,9 +436,36 @@ function seedConfiguredProviderModels(): number {
   return added;
 }
 
-export async function refreshCatalog(): Promise<{ freellmapi: number; openrouter: number; total: number }> {
-  const counts = { freellmapi: 0, openrouter: 0, total: 0 };
+export async function refreshCatalog(): Promise<{ freellmapi: number; openrouter: number; geminiLive: number; total: number }> {
+  const counts = { freellmapi: 0, openrouter: 0, geminiLive: 0, total: 0 };
   const sources: string[] = [];
+  // Live Gemini discovery FIRST: the live list is authoritative for which
+  // Gemini ids exist today; CONFIGURED_FREE_MODELS below is only a fallback
+  // when this fetch returns nothing (no key, or Google unreachable).
+  let liveGeminiIds: string[] = [];
+  try {
+    const geminiKeys = await readProviderKeysFromStores('gemini');
+    if (geminiKeys.length) {
+      liveGeminiIds = await fetchGeminiModels(geminiKeys[0]);
+      let excluded = 0;
+      for (const id of liveGeminiIds) {
+        if (isModelExcluded(id)) { excluded++; continue; }
+        const prev = catalog.get(id) || { id, providers: [], source: 'gemini-live' };
+        if (!prev.providers.includes('gemini')) prev.providers.push('gemini');
+        prev.source = 'gemini-live';
+        catalog.set(id, prev);
+      }
+      counts.geminiLive = liveGeminiIds.length - excluded;
+      if (excluded) console.log(`[model-chain] Gemini live: dropped ${excluded} paid/retired models`);
+      if (liveGeminiIds.length) sources.push('gemini-live');
+      // Prune stale live entries the new list no longer contains.
+      for (const [id, entry] of [...catalog]) {
+        if (entry.source === 'gemini-live' && !liveGeminiIds.includes(id)) catalog.delete(id);
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[model-chain] Gemini live catalog fetch failed: ${err?.message || String(err)}`);
+  }
   try {
     const ids = await fetchFreeLLMAPI();
     let excluded = 0;
@@ -414,7 +501,8 @@ export async function refreshCatalog(): Promise<{ freellmapi: number; openrouter
   counts.total = catalog.size;
   // Configured providers' documented free models (Gemini/Groq) are not in
   // any live catalog — add them when keys for that provider are configured.
-  const seeded = seedConfiguredProviderModels();
+  // Gemini ids seed ONLY when the live fetch above returned nothing.
+  const seeded = await seedConfiguredProviderModels(liveGeminiIds.length > 0);
   if (seeded) sources.push('configured');
   counts.total = catalog.size;
   catalogFetchedAt = Date.now();
@@ -665,12 +753,18 @@ export function tierOfModel(model: string, task: TaskKind): ModelTier {
   return tierFor(scoreModel(model, task));
 }
 
-/** Next healthy entry after `failedModel` in the task chain (same tier first). */
+/** Next healthy entry AFTER `failedModel` in the task chain (same tier first).
+ * The old implementation returned the FIRST same-tier entry, which could be
+ * the model before the failed one — the router then retried a model it had
+ * already passed. */
 export function nextAfterFailure(failedModel: string, task: TaskKind, providerFilter?: string): ChainEntry | null {
   const chain = getChainForTask(task, providerFilter, 12);
+  const idx = chain.findIndex((e) => e.model === failedModel);
+  const after = idx >= 0 ? chain.slice(idx + 1) : chain;
   const failedTier = tierOfModel(failedModel, task);
-  const sameTier = chain.find((e) => e.model !== failedModel && e.tier === failedTier);
+  const sameTier = after.find((e) => e.model !== failedModel && e.tier === failedTier);
   if (sameTier) return sameTier;
+  if (after.length) return after[0];
   return chain.find((e) => e.model !== failedModel) || null;
 }
 

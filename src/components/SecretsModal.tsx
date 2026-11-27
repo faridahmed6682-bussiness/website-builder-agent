@@ -36,6 +36,42 @@ interface SecretsModalProps {
   onKeysUpdated?: () => void;
 }
 
+// Safe JSON parse for panel fetches. The server always answers JSON, but
+// Render's free-plan proxy answers with an HTML wake-up/error page while
+// the service is asleep — res.json() on that throws a raw SyntaxError
+// ("Unexpected token '<', '<!DOCTYPE '... is not valid JSON") which used to
+// surface verbatim as the key-test result. A non-JSON response returns null
+// instead, so callers can show a friendly Bengali message.
+export async function parseJsonSafe(res: Response): Promise<any | null> {
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) return null; // HTML error page, e.g. Render waking up
+  try { return await res.json(); } catch { return null; }
+}
+
+// The key was NOT checked when the server never answered JSON — say so, so
+// the user does not conclude the key itself is bad.
+export const SERVER_WAKING_MESSAGE =
+  'সার্ভার এখন জেগে উঠছে — কয়েক সেকেন্ড অপেক্ষা করে আবার Test চাপুন। আপনার কী-তে সমস্যা নয়, সার্ভার থেকে উত্তর আসেনি; কী-টি ঠিক আছে কি না, তা এখনো যাচাই হয়নি।';
+
+// POST /api/secrets/test-key with one automatic retry: a null (non-JSON)
+// first answer usually means Render free is waking up, which is one-shot —
+// retry once after ~5 s before giving up. Returns { res, data } where data
+// is null when the server never answered JSON on either attempt.
+async function postTestKey(payload: Record<string, unknown>): Promise<{ res: Response; data: any | null }> {
+  const doPost = async () => {
+    const res = await fetch('/api/secrets/test-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return { res, data: await parseJsonSafe(res) };
+  };
+  const first = await doPost();
+  if (first.data) return first;
+  await new Promise((r) => setTimeout(r, 5000));
+  return doPost();
+}
+
 export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onKeysUpdated }) => {
   const [keys, setKeys] = useState<KeyConfig[]>([]);
   const [newKeyName, setNewKeyName] = useState('');
@@ -128,8 +164,9 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
     setPreferOnlyFreeKeys(getPreferOnlyCustomKeys());
     setStickyKeyId(getLastSuccessfulKeyId());
     fetch('/api/secrets/pool-status')
-      .then(r => r.json())
+      .then(r => parseJsonSafe(r))
       .then(data => {
+        if (!data) return; // HTML wake-up page — keep previous pool state
         if (data?.lastSuccessfulKeyId) {
           setStickyKeyId(data.lastSuccessfulKeyId);
           setLastSuccessfulKeyId(data.lastSuccessfulKeyId);
@@ -182,8 +219,8 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
           baseUrl: baseUrlForAuth || (prov === 'custom' || prov === 'freellmapi' ? newBaseUrl.trim() : undefined),
         }),
       });
-      const data = await res.json();
-      if (res.ok && Array.isArray(data.models) && data.models.length > 0) {
+      const data = await parseJsonSafe(res);
+      if (res.ok && Array.isArray(data?.models) && data.models.length > 0) {
         setLiveModelsByProvider(prev => ({ ...prev, [prov]: data.models }));
         if (!useCustomModelInput && prov === newProvider) {
           setNewModel(data.models[0].id);
@@ -248,17 +285,16 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
     setIsTesting('__draft__');
     setTestResult(null);
     try {
-      const res = await fetch('/api/secrets/test-key', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider: newProvider,
-          apiKey: newApiKey.trim(),
-          model: chosenModel,
-          baseUrl: newProvider === 'custom' || newProvider === 'freellmapi' ? newBaseUrl.trim() : undefined,
-        }),
+      const { res, data } = await postTestKey({
+        provider: newProvider,
+        apiKey: newApiKey.trim(),
+        model: chosenModel,
+        baseUrl: newProvider === 'custom' || newProvider === 'freellmapi' ? newBaseUrl.trim() : undefined,
       });
-      const data = await res.json();
+      if (!data) {
+        setTestResult({ id: '__draft__', success: false, message: SERVER_WAKING_MESSAGE });
+        return;
+      }
       const ok = Boolean(res.ok && (data.success || data.valid));
       setTestResult({
         id: '__draft__',
@@ -268,7 +304,7 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
           : (data.message || data.error || 'Failed to authenticate key'),
       });
     } catch (err: any) {
-      setTestResult({ id: '__draft__', success: false, message: err.message });
+      setTestResult({ id: '__draft__', success: false, message: /Unexpected token|is not valid JSON/i.test(err?.message || '') ? SERVER_WAKING_MESSAGE : err.message });
     } finally {
       setIsTesting(null);
     }
@@ -278,17 +314,16 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
     setIsTesting(k.id);
     setTestResult(null);
     try {
-      const res = await fetch('/api/secrets/test-key', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider: k.provider,
-          apiKey: k.apiKey,
-          model: k.model,
-          baseUrl: k.baseUrl,
-        }),
+      const { res, data } = await postTestKey({
+        provider: k.provider,
+        apiKey: k.apiKey,
+        model: k.model,
+        baseUrl: k.baseUrl,
       });
-      const data = await res.json();
+      if (!data) {
+        setTestResult({ id: k.id, success: false, message: SERVER_WAKING_MESSAGE });
+        return;
+      }
       const ok = Boolean(res.ok && (data.success || data.valid));
       setTestResult({
         id: k.id,
@@ -298,7 +333,7 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
           : (data.message || data.error || 'Failed to authenticate key'),
       });
     } catch (err: any) {
-      setTestResult({ id: k.id, success: false, message: err.message });
+      setTestResult({ id: k.id, success: false, message: /Unexpected token|is not valid JSON/i.test(err?.message || '') ? SERVER_WAKING_MESSAGE : err.message });
     } finally {
       setIsTesting(null);
     }

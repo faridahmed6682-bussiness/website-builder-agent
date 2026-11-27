@@ -16,7 +16,7 @@ import { describeImage } from "./vision.ts";
 import { CODING_SKILLS_REGISTRY } from "./skillsRegistry.ts";
 import {
   getChainForTask, nextAfterFailure, noteModelAttempt, recordModelSuccess, recordModelFailure,
-  parseRetryAfter, tierOfModel, degradationBetween, handoffNote,
+  parseRetryAfter, tierOfModel, degradationBetween, handoffNote, isModelLive,
   classifyRateLimit, limitLabel, nextMidnightPacificMs, firstOpenRouterFreeModel, type TaskKind, type RateLimitKind,
 } from "./modelChain.ts";
 
@@ -296,6 +296,11 @@ export function normalizeModelName(provider: string, model?: string): string {
       'gemini-nano-banana-2.1',
       'gemini-3-pro-image'
     ];
+    // Live-discovered Gemini ids are valid as-is: the catalog is the
+    // authority for which ids exist today. Without this, any newly
+    // discovered id not in the hardcoded list above was silently renamed
+    // (and a stored key model rewritten on every loadSecrets).
+    if (isModelLive(model)) return model;
     if (validGeminiModels.includes(model)) return model;
     return model.startsWith('gemini-') ? model : 'gemini-3.8-flash';
   }
@@ -332,6 +337,18 @@ export function normalizeModelName(provider: string, model?: string): string {
     return (model || 'gpt-4o-mini').trim();
   }
   return model || '';
+}
+
+/**
+ * All-keys-429 rule for the Gemini turn loop: drop to the next live Gemini
+ * model ONLY when every Gemini key has already 429'd on this model this
+ * turn; otherwise rotate keys on the SAME model. Pure function so the rule
+ * is unit-testable (scripts/failover-proof.mts).
+ */
+export function shouldDropGeminiModel(hitKeyIds: Set<string>, allGeminiKeyIds: Set<string>): boolean {
+  if (allGeminiKeyIds.size === 0) return false;
+  for (const id of allGeminiKeyIds) if (!hitKeyIds.has(id)) return false;
+  return true;
 }
 
 // Build the FreeLLMAPI key entry.
@@ -2728,19 +2745,28 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
   let didNetworkRetry = false;
   let lastFailureMessage = '';
   const failedGeminiModels = new Set<string>();
+  // Turn-scoped (model -> keyIds) map of pairs that already 429'd this
+  // turn. A 429 rotates keys on the SAME model; only when EVERY Gemini key
+  // has 429'd on that model does the turn drop to the next live model.
+  const gemini429ByModel = new Map<string, Set<string>>();
+  const geminiKeyIds = new Set(activePool.filter((k) => k.provider === 'gemini').map((k) => k.id));
 
   const buildGeminiModelChain = (primary?: string | null) => {
-    // Hydrogen-first: same model across all keys first (key rotation keeps
-    // quality at 100%); 3.8 Flash next (also key-rotated); Flash-Lite last.
+    // Live-discovered Gemini-only chain (quality-ordered, healthy only;
+    // Hydrogen already scores 95 so it stays first when live). The
+    // hardcoded list below is the cold-boot fallback when the catalog is
+    // empty — never the authority.
+    const live = getChainForTask('coding', 'gemini', 12).map((e) => e.model);
     const defaults = [
       'gemini-4-hydrogen',
       'gemini-3.8-flash',
       'gemini-3.6-flash',
       'gemini-3.1-flash-lite',
     ];
+    const base = live.length ? live : defaults;
     const ordered = primary
-      ? [primary, ...defaults.filter(m => m !== primary)]
-      : defaults;
+      ? [primary, ...base.filter(m => m !== primary)]
+      : base;
     return ordered.filter(m => !failedGeminiModels.has(m));
   };
 
@@ -2913,6 +2939,21 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
               // next model on the same key.
               const isQuota = mErr?.status === 429 || /429|quota|resource_exhausted|rate limit|free-models-per-day/i.test(mMsg);
               if (isQuota) {
+                // Record this (model, key) pair as 429'd this turn. Rotate
+                // keys on the SAME model first; drop to the next live model
+                // ONLY when every Gemini key has 429'd on this model.
+                let hitKeys = gemini429ByModel.get(candidateModel);
+                if (!hitKeys) { hitKeys = new Set(); gemini429ByModel.set(candidateModel, hitKeys); }
+                hitKeys.add(key.id);
+                const allKeysHit = shouldDropGeminiModel(hitKeys, geminiKeyIds);
+                if (allKeysHit) {
+                  failedGeminiModels.add(candidateModel);
+                  sendEvent({
+                    type: "action",
+                    action: `⚡ ${candidateModel}: সব কী-তে লিমিট — পরের Gemini মডেলে যাওয়া হচ্ছে...`
+                  });
+                  continue;
+                }
                 sendEvent({
                   type: "action",
                   action: `⚡ ${candidateModel}: this key hit its limit — rotating to the next key, same model...`
@@ -3123,6 +3164,10 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
         // the provider's error text — never assumed. Retry-After is read from
         // the message when present ("retry after 42s" / "retry in 42 seconds").
         const limitKind: RateLimitKind | null = is429 ? classifyRateLimit(err.status === 429 ? 429 : undefined, errMsg) : null;
+        // A Gemini RPD 429 sets sawRateLimit but never matched
+        // /free-models-per-day/, so it landed in the per-minute message.
+        // classifyRateLimit knows the budget from the error text — trust it.
+        if (limitKind === 'rpd') sawDailyFreeLimit = true;
         const retryAfterMatch = /retry[- ]after\s*[:=]?\s*(\d+)|retry in\s+(\d+)\s*s/i.exec(errMsg);
         const retryAfterSec = retryAfterMatch ? Number(retryAfterMatch[1] || retryAfterMatch[2]) : parseRetryAfter(null);
         if (limitKind === 'rpm' || limitKind === 'tpm') {
@@ -3397,7 +3442,7 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
       finalUserError = NO_PROVIDER_KEYS_MESSAGE;
       finalIsAuthError = true;
     } else if (sawDailyFreeLimit) {
-      finalUserError = "⚠️ আপনার OpenRouter ফ্রি কী-টির দৈনিক লিমিট (free-models-per-day) শেষ হয়ে গেছে। চালু রাখতে 🔑 API Keys মেনুতে নতুন একটি Gemini / Groq / OpenRouter কী যুক্ত করুন।";
+      finalUserError = "⚠️ আপনার ফ্রি কী-গুলোর দৈনিক লিমিট শেষ হয়ে গেছে (দৈনিক কোটা পূর্ণ)। চালু রাখতে 🔑 API Keys মেনুতে নতুন একটি Gemini / Groq / OpenRouter কী যুক্ত করুন, অথবা মধ্যরাত (Pacific) পর্যন্ত অপেক্ষা করুন।";
     } else if (sawRateLimit && !sawAuthError) {
       finalUserError = "⚠️ বর্তমান API কী-গুলোর per-minute রেট লিমিট পূর্ণ হয়েছে। অনুগ্রহ করে ৩০-৬০ সেকেন্ড অপেক্ষা করুন অথবা 🔑 মেনুতে বিকল্প কী যুক্ত করুন।";
     } else if (sawProviderOverload && !sawAuthError) {
