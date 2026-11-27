@@ -29,6 +29,7 @@ import { CODING_SKILLS_REGISTRY, getSkillByName } from './server/agent/skillsReg
 import { getFirebaseStatus, storeFirebaseConfig, deleteFirebaseConfig, parseFirebaseWebConfig, parseGoogleServicesJson, addFirebaseToProject, deployFirebaseHosting } from './server/agent/firebaseConnect.ts';
 import { getGitHubConnection, isOAuthConfigured, getOAuthCallbackUrl, newOAuthState, consumeOAuthState, buildAuthorizeUrl, exchangeCodeForToken, storeGitHubToken, readStoredGitHubToken, deleteStoredGitHubToken, revokeOAuthToken } from './server/agent/githubAuth.ts';
 import { startDeploy, getDeployJob, deployStatus } from './server/agent/deployService.ts';
+import { deployHtmlFile } from './server/agent/websiteDeployer.ts';
 import { initModelChain, getChainForTask, catalogStatus, modelChainStatus } from './server/agent/modelChain.ts';
 import { wireNexusScheduler } from './server/agent/nexusTools.ts';
 import { readUserMemory, appendUserMemory, setUserMemory, loadChat, listChats, listProjects, exportBackup } from './server/agent/memory.ts';
@@ -355,7 +356,7 @@ async function startServer() {
   // File Write
   app.post('/api/tools/file-write', async (req, res) => {
     try {
-      const { filePath, content } = req.body;
+      const { filePath, content, sessionId } = req.body;
       if (!filePath || content === undefined) return res.status(400).json({ error: 'filePath and content are required' });
 
       const absolutePath = path.resolve(process.cwd(), filePath);
@@ -365,6 +366,24 @@ async function startServer() {
 
       await fs.mkdir(path.dirname(absolutePath), { recursive: true });
       await fs.writeFile(absolutePath, content, 'utf-8');
+
+      // Step 11: writing a projects/*.html file runs the same deployHtmlFile
+      // PWA path the agent's write_to_file tool already uses (manifest +
+      // service worker + session copy), so a static template applied via
+      // this endpoint previews exactly like a model-built site. A deploy
+      // failure never fails the write itself.
+      const normalized = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+      if (normalized.startsWith('projects/') && normalized.endsWith('.html')) {
+        try {
+          const deployed = await deployHtmlFile(content, typeof sessionId === 'string' ? sessionId : undefined);
+          if (deployed.success) {
+            return res.json({ success: true, previewUrl: deployed.url, deployedHtml: deployed.html, path: deployed.path });
+          }
+        } catch (err) {
+          console.warn('file-write PWA deploy note:', (err as any)?.message || err);
+        }
+      }
+
       res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ error: error.message });

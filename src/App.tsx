@@ -74,6 +74,7 @@ import { AskQuestionModal, PendingQuestionPrompt } from './components/AskQuestio
 import { SidebarDrawer } from './components/SidebarDrawer';
 import { GoogleAIStudioCoderView } from './components/GoogleAIStudioCoderView';
 import { getLocalKeys } from './lib/secretsManager';
+import { STATIC_TEMPLATES, type StaticTemplate } from './lib/templates';
 import { ActionStep } from './types/secrets';
 import { 
   getAllSessions, 
@@ -133,6 +134,9 @@ export default function App() {
   const [messages, setMessages] = useState<any[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  // Step 11: applying a static template never calls a model — it only
+  // POSTs the bundled template HTML to /api/tools/file-write.
+  const [isApplyingTemplate, setIsApplyingTemplate] = useState(false);
   const [actionLog, setActionLog] = useState<string | null>(null);
   const [activityLogs, setActivityLogs] = useState<string[]>([]);
   const [actionSteps, setActionSteps] = useState<ActionStep[]>([]);
@@ -604,6 +608,99 @@ export default function App() {
     }
   };
 
+  /**
+   * Step 11 — "Use template": apply a bundled static template with ZERO
+   * model calls. The template HTML is copied through the existing
+   * POST /api/tools/file-write path (server runs the deployHtmlFile PWA
+   * path for projects/*.html: manifest + service worker + session copy),
+   * then the local preview is shown. No chatWithAI, no /api/gemini/*,
+   * no provider (Gemini/Groq/OpenRouter) request happens here at all, so
+   * this works with no API key. If the server is unreachable (e.g. static
+   * preview build), fall back to a local blob-URL preview of the same HTML.
+   */
+  const handleUseTemplate = async (template: StaticTemplate) => {
+    if (isLoading || isApplyingTemplate) return;
+    setIsApplyingTemplate(true);
+    setError(null);
+
+    let sessionId = currentSessionId;
+    if (!sessionId) {
+      sessionId = `session_${Date.now()}`;
+      setCurrentSessionId(sessionId);
+      setCurrentSessionTitle(template.title);
+    }
+    const targetPath = `projects/${sessionId}/index.html`;
+
+    const userMessage: any = { role: 'user', parts: [{ text: `টেমপ্লেট ব্যবহার করুন: ${template.title}` }] };
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
+
+    let html = template.html;
+    let previewTarget = `${window.location.origin}/${targetPath}`;
+    let savedToDisk = false;
+    try {
+      const res = await fetch('/api/tools/file-write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath: targetPath, content: template.html, sessionId }),
+      });
+      if (res.ok) {
+        const data = await res.json().catch(() => ({} as any));
+        if (data?.success) {
+          savedToDisk = true;
+          if (typeof data.deployedHtml === 'string' && data.deployedHtml) html = data.deployedHtml;
+          if (typeof data.previewUrl === 'string' && data.previewUrl) {
+            previewTarget = data.previewUrl.startsWith('http')
+              ? data.previewUrl
+              : `${window.location.origin}${data.previewUrl.startsWith('/') ? '' : '/'}${data.previewUrl}`;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Template file-write unreachable, using local preview:', err);
+    }
+    if (!savedToDisk) {
+      // Local-only fallback: same template, same preview — just not on disk.
+      try {
+        const blob = new Blob([template.html], { type: 'text/html;charset=utf-8' });
+        previewTarget = URL.createObjectURL(blob);
+      } catch {
+        previewTarget = `${window.location.origin}/${targetPath}`;
+      }
+    }
+
+    const modelMessage: any = {
+      role: 'model',
+      parts: [{ text: savedToDisk
+        ? `✅ "${template.title}" টেমপ্লেটটি তৈরি — কোনো AI কল ছাড়াই! ফাইলটি ${targetPath} এ সংরক্ষিত হয়েছে (PWA ম্যানিফেস্ট ও সার্ভিস ওয়ার্কারসহ) এবং নিচের প্রিভিউতে দেখা যাচ্ছে। এডিট করতে চাইলে চ্যাটে বলুন — যেমন "হেডারে দোকানের নাম বদলে দাও"।`
+        : `✅ "${template.title}" টেমপ্লেটটি প্রিভিউতে দেখা যাচ্ছে — কোনো AI কল ছাড়াই! (সার্ভারে সংরক্ষণ করা যায়নি, তাই পেজ রিলোড করলে এটি হারিয়ে যাবে — সংরক্ষণ করতে Download বাটন ব্যবহার করুন।)` }],
+    };
+    const finalMessages = [...newMessages, modelMessage];
+    setMessages(finalMessages);
+    setCurrentSessionHtml(html);
+    // Cache-bust http(s) previews only — a blob: URL must stay untouched.
+    setPreviewUrl(previewTarget.startsWith('blob:')
+      ? previewTarget
+      : `${previewTarget}${previewTarget.includes('?') ? '&' : '?'}t=${Date.now()}`);
+    setModifiedFiles(prev => prev.includes(targetPath) ? prev : [...prev, targetPath]);
+    setShowCodePreview(true);
+    setPreviewKey(k => k + 1);
+    try {
+      const sess = await getSession(sessionId).catch(() => null);
+      await saveSession({
+        ...(sess || { id: sessionId, title: template.title, createdAt: Date.now(), mode: activeMode }),
+        messages: finalMessages,
+        generatedHtml: html,
+        previewUrl: `/${targetPath}`,
+        updatedAt: Date.now(),
+      });
+    } catch (err) {
+      console.warn('Template session save failed:', err);
+    } finally {
+      setIsApplyingTemplate(false);
+    }
+  };
+
   const handleNewChat = () => {
     setCurrentSessionId(null);
     setCurrentSessionTitle('New Canvas');
@@ -938,6 +1035,50 @@ export default function App() {
                     </div>
                   </button>
                 ))}
+              </div>
+
+              {/* Step 11 — Real static templates: zero model calls, instant. */}
+              <div className="w-full mt-8">
+                <div className="flex items-center gap-2 mb-1">
+                  <h3 className="text-base font-bold text-white">⚡ ফ্রি টেমপ্লেট — এখনই ব্যবহার করুন</h3>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    কোনো AI কল নয় • কোনো কী লাগে না
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 mb-3 leading-relaxed">
+                  তৈরি করা ডিজাইন এক ক্লিকে বসিয়ে নিন — মডেলের জন্য অপেক্ষা নেই, কোটা খরচ নেই। পরে চ্যাটে বললেই এডিট করা যাবে।
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 w-full">
+                  {STATIC_TEMPLATES.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => handleUseTemplate(item)}
+                      disabled={isLoading || isApplyingTemplate}
+                      className="p-4 rounded-2xl bg-slate-900/60 hover:bg-slate-900 border border-slate-800 hover:border-emerald-500/50 text-left transition-all group shadow-lg flex flex-col justify-between cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          <div className={cn("w-9 h-9 rounded-xl flex items-center justify-center bg-gradient-to-br border", item.color)}>
+                            <item.icon className="w-5 h-5" />
+                          </div>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+                            {item.badge}
+                          </span>
+                        </div>
+                        <h3 className="text-sm font-bold text-white group-hover:text-emerald-300 transition-colors mb-1">
+                          {item.title}
+                        </h3>
+                        <p className="text-xs text-slate-400 line-clamp-2 leading-relaxed">
+                          {item.description}
+                        </p>
+                      </div>
+                      <div className="mt-3 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400 opacity-80 group-hover:opacity-100 transition-opacity">
+                        <span>{isApplyingTemplate ? 'বসানো হচ্ছে…' : 'টেমপ্লেট ব্যবহার করুন'}</span>
+                        <span>→</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           )}
