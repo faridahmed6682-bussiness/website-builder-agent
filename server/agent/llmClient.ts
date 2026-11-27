@@ -303,7 +303,12 @@ export function classifyTask(prompt: string): 'coding' | 'reasoning' | 'chat' {
   const codingRe =
     /(build|make|create|website|web ?site|web ?app|app|page|landing|shop|store|dashboard|portfolio|game|code|coding|fix|bug|error|debug|deploy|html|css|javascript|typescript|react|component|function|api|database|firebase|button|form|layout|design|clone|import|repo|github|preview|edit|change|update|add|remove|style|responsive|pwa|install)/;
   const reasoningRe =
-    /(why|explain|compare|versus|vs\.?|analyse|analyze|reason|think|plan|decide|which is better|pros and cons|trade-?off|proof|calculate|math|research|strategy|should i|what if|evaluate|review my)/;
+    /(why|compare|versus|vs\.?|analyse|analyze|reason|think|plan|decide|which is better|pros and cons|trade-?off|proof|calculate|math|research|strategy|should i|what if|evaluate|review my)/;
+  // NOTE (STEP 7, P1/F4): "explain" is deliberately NOT here. Pure
+  // explanations are routed to one direct cheap-model answer by the intent
+  // gate; if one ever reaches the loop, it is 'chat' (cheap chain), not
+  // 'reasoning' (Hydrogen, high effort). Coding nouns above still win
+  // first, so "explain and fix this code" stays coding.
   if (codingRe.test(p)) return 'coding';
   if (reasoningRe.test(p)) return 'reasoning';
   return 'chat';

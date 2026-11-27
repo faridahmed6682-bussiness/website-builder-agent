@@ -17,7 +17,30 @@ import { chatOnce, chatChain } from './llmClient.ts';
 export type Intent = 'casual' | 'task' | 'unclear';
 
 const TASK_VERBS =
-  /(build|make|create|fix|repair|debug|deploy|publish|search|find|look\s*up|write|edit|change|update|add|remove|delete|open|show|list|read|run|test|check|convert|clone|import|export|push|install|upload|download|generate|design|improve|refactor|move|rename|copy|count|compare|analyse|analyze|explain|plan|review|website|web\s*site|web\s*app|app|page|landing|shop|store|dashboard|portfolio|game|code|coding|html|css|javascript|typescript|react|component|function|api|database|firebase|button|form|layout|clone|repo|github|preview|responsive|pwa|বানাও|বানান|তৈরি\s*করো|তৈরি\s*কর|ঠিক\s*করো|ঠিক\s*কর|খুঁজে|খোঁজো|দেখাও|দেখান|তালিকা|খোলো|খুলো|চালাও|চালু|ডিপ্লয়|আপলোড|ডাউনলোড|যোগ\s*করো|মুছে|সরাও|পরিবর্তন|লিখো|এডিট|সাইট|অ্যাপ|কোড|ওয়েবসাইট|দোকান|গেম|ড্যাশবোর্ড)/i;
+  /(build|make|create|fix|repair|debug|deploy|publish|search|find|look\s*up|write|edit|change|update|add|remove|delete|open|show|list|read|run|test|check|convert|clone|import|export|push|install|upload|download|generate|design|improve|refactor|move|rename|copy|count|compare|analyse|analyze|plan|review|website|web\s*site|web\s*app|app|page|landing|shop|store|dashboard|portfolio|game|code|coding|html|css|javascript|typescript|react|component|function|api|database|firebase|button|form|layout|clone|repo|github|preview|responsive|pwa|বানাও|বানান|তৈরি\s*করো|তৈরি\s*কর|ঠিক\s*করো|ঠিক\s*কর|খুঁজে|খোঁজো|দেখাও|দেখান|তালিকা|খোলো|খুলো|চালাও|চালু|ডিপ্লয়|আপলোড|ডাউনলোড|যোগ\s*করো|মুছে|সরাও|পরিবর্তন|লিখো|এডিট|সাইট|অ্যাপ|কোড|ওয়েবসাইট|দোকান|গেম|ড্যাশবোর্ড)/i;
+
+// STEP 7 (P1/F4): pure explanation questions — "explain X", "what is X",
+// "how does X work" — used to hit TASK_VERBS ("explain") and go to the full
+// 16-round tool loop on Hydrogen. They now get one direct cheap-model answer
+// like the casual path. The boundary is sharp: a build/change verb, or a
+// request about the user's own code/files, keeps the message a task.
+// Nouns alone do NOT keep it a task — "explain what a database is" names a
+// topic, not work to do.
+const EXPLAIN_RE =
+  /(^|\b)(explain|what is|what are|what does|what do|how does|how do|how is|how are|tell me about|describe|what'?s the difference|difference between)\b/i;
+
+// Bengali explain phrases: NO \b boundaries — JS \b is ASCII-only, so it
+// never matches around Bengali letters and would silently miss these.
+const EXPLAIN_BN_RE =
+  /(ব্যাখ্যা|বুঝিয়ে|বুঝিয়ে|কীভাবে কাজ করে|কিভাবে কাজ করে|কী জিনিস|কি জিনিস)/;
+
+const BUILD_CHANGE_RE =
+  /(build|make|create|fix|repair|debug|deploy|publish|write|edit|change|update|add|remove|delete|generate|design|improve|refactor|move|rename|copy|convert|clone|import|export|push|install|upload|download|run|test|implement|modify|upgrade|compile|search|find|look\s*up|open|show|list|read|count|compare|বানাও|বানান|তৈরি\s*করো|তৈরি\s*কর|ঠিক\s*করো|ঠিক\s*কর|খুঁজে|খোঁজো|দেখাও|দেখান|তালিকা|খোলো|খুলো|চালাও|চালু|ডিপ্লয়|আপলোড|ডাউনলোড|যোগ\s*করো|মুছে|সরাও|পরিবর্তন|লিখো|এডিট)/i;
+
+// Asking about the user's own code/files ("explain this code", "explain my
+// file") stays a task; asking what a thing is ("explain what a function
+// is") does not — "a function" is a topic, not their code.
+const OWN_CODE_RE = /\b(this|my|that|the)\s+(code|file|script|function|component|repo)\b/i;
 
 const GREETING_RE =
   /^(hi+|hello+|hey+|helo+|yo+|hola|salam|assalamu\s*alaikum|nomoshkar|namaste|good\s*(morning|afternoon|evening|night)|thanks?|thank\s*you|thx|ok|okay|bye|goodbye|হাই|হ্যালো|হেলো|সালাম|আসসালামু\s*আলাইকুম|নমস্কার|কেমন\s*আছো|কেমন\s*আছেন|কি\s*খবর|কী\s*খবর|ভালো\s*আছো|ধন্যবাদ|শুভ\s*(সকাল|দুপুর|সন্ধ্যা|রাত্রি)|ঠিক\s*আছে|ওকে)$/i;
@@ -63,6 +86,12 @@ export function classifyIntentLocal(prompt: string, history: HistoryTurn[] = [])
   if (!trimmed) return 'unclear';
   // Never casual: URLs, code fences, file paths, or a task verb anywhere.
   if (URL_OR_CODE_RE.test(trimmed)) return 'task';
+  // STEP 7 (P1/F4): pure explanation questions get one direct cheap-model
+  // answer (casual path) — no tools, no agent loop. Checked BEFORE the
+  // task-verb test, but only when no build/change verb and no request about
+  // the user's own code/files is present, so "explain how to build a
+  // website" / "explain and fix this code" still stay tasks.
+  if ((EXPLAIN_RE.test(trimmed) || EXPLAIN_BN_RE.test(trimmed)) && !BUILD_CHANGE_RE.test(trimmed) && !OWN_CODE_RE.test(trimmed)) return 'casual';
   if (TASK_VERBS.test(trimmed)) return 'task';
 
   const clean = trimmed.toLowerCase().replace(/[!?.।,~`'"]+/g, '').trim();
