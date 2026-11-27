@@ -67,9 +67,18 @@ For any non-trivial coding or app-building request, FIRST call \`omo_coordinate\
 
   // Skill list is generated from CODING_SKILLS_REGISTRY (single source of
   // truth — every skill in the registry, never a hardcoded copy that drifts).
-  const skillListSection = CODING_SKILLS_REGISTRY
-    .map((s, i) => `${i + 1}. [${s.name}]: ${s.description}`)
-    .join('\n');
+  // NAMES ONLY (Step 5, P0): the full list WITH descriptions cost ~1,276
+  // tokens on every call. The model still gets full detail for the few
+  // skills that matter: matched skills are preloaded verbatim below
+  // (matchedSkillsSection), and any other skill is one read_skill call away
+  // — or read_skill('list') for name + short-description summaries of all.
+  // Names wrapped 6 per line so the list stays scannable in logs.
+  const skillNames = CODING_SKILLS_REGISTRY.map((s) => s.name);
+  const skillListLines: string[] = [];
+  for (let i = 0; i < skillNames.length; i += 6) {
+    skillListLines.push(skillNames.slice(i, i + 6).join(', '));
+  }
+  const skillListSection = skillListLines.join('\n');
 
   const matchedSkillsSection = options.matchedSkills?.trim()
     ? `\n\n================================================================================
@@ -147,10 +156,10 @@ Current Mode: ${mode}${personaSection}${customSection}${outputFormatSection}${mu
   say so and build from the user's description instead.
 
 ================================================================================
-# SKILL CHECK & DYNAMIC SKILL LOADING (${CODING_SKILLS_REGISTRY.length} CODING SKILLS)
+# SKILL CHECK & DYNAMIC SKILL LOADING (${CODING_SKILLS_REGISTRY.length} CODING SKILLS — NAMES ONLY)
 ================================================================================
 At the start of a NEW CODING TASK or when user prompt shifts to implementation, perform a Skill Check!
-If any skill below is [RELEVANT] to the user's request, call \`read_skill\` with its SkillName BEFORE modifying or creating code files:
+The skills below are listed by NAME only — their full instructions are NOT in this prompt (they would cost ~1,300 tokens on every call). To load one, call \`read_skill\` with its SkillName BEFORE modifying or creating code files. Unsure which skill fits? Call \`read_skill\` with 'list' for a name + short-description summary of all ${CODING_SKILLS_REGISTRY.length} skills. Skills already matched to this request are pre-loaded in full under "PRE-LOADED SKILLS FOR THIS REQUEST" below — follow those closely, no extra read_skill call needed for them:
 
 ${skillListSection}${matchedSkillsSection}${memorySection}${lessonsSection}
 
@@ -211,7 +220,7 @@ Phase 6: Scannable Structured Reporting
 
 2. Full-Stack Workspace Coding Mode:
    - When asked to clone repos, modify app source code, add features, debug errors, or inspect files:
-   - Execute real workspace tools (\`read_skill\`, \`omo_coordinate\`, \`read_multiple_files\`, \`code_execution_sandbox\`, \`debug_error_analysis\`, \`verify_live_preview\`, \`compute_file_diff\`, \`grep_search\`, \`find_by_name\`, \`view_file\`, \`write_to_file\`, \`replace_file_content\`, \`multi_replace_file_content\`, \`run_command\`, \`install_applet_package\`, \`compile_applet\`, \`lint_applet\`, \`restart_dev_server\`, \`ask_question\`, \`set_up_firebase\`, \`deploy_firebase\`, \`set_up_oauth\`, \`cloudsql_execute_sql\`, \`figma_import\`, \`focus_mode\`, \`schedule\`).
+   - Execute real workspace tools (\`read_skill\`, \`omo_coordinate\`, \`read_multiple_files\`, \`code_execution_sandbox\`, \`debug_error_analysis\`, \`verify_live_preview\`, \`compute_file_diff\`, \`grep_search\`, \`find_by_name\`, \`view_file\`, \`write_to_file\`, \`replace_file_content\`, \`multi_replace_file_content\`, \`run_command\`, \`install_applet_package\`, \`compile_applet\`, \`lint_applet\`, \`restart_dev_server\`, \`ask_question\`, \`set_up_firebase\`, \`deploy_firebase\`, \`cloudsql_execute_sql\`).
 
 ================================================================================
 # LANGUAGE & PRESENTATION
