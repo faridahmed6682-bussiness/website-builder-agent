@@ -1435,6 +1435,78 @@ const PLAN_TOOLS = new Set(['omo_coordinate', 'ask_question', 'plan', 'read_skil
 const TOOL_RESULT_MAX_CHARS = Number(process.env.TOOL_RESULT_MAX_CHARS || 3000);
 // Max repair rounds shared by the verify-then-fix loop and the reviewer pass.
 const MAX_REPAIR_ROUNDS = 2;
+
+// STEP 8 (P1) — conditional reviewer. The reviewer pass costs 1 extra model
+// call + a ~2,000-token brief, so it runs ONLY when the build warrants a
+// second pair of eyes:
+//   (a) verification failed and was fixed this turn — a real defect slipped
+//       through once, so re-check the repair; or
+//   (b) the diff is large; or
+//   (c) it is the first build of the session — no prior build to compare
+//       against, so establish the quality baseline.
+// A small, clean follow-up build (verification passed first try, small
+// diff, session already has a build) skips the reviewer entirely.
+// Thresholds — calibrated, not guessed:
+//   LARGE_DIFF_CHARS = 50,000: ~2.5x the ~21 KB typical single-file build
+//     observed in projects/index.html, so ordinary first-pass builds stay
+//     under it while genuinely big pages / multi-file rewrites trip it.
+//   LARGE_DIFF_FILES = 5: a multi-file app (html + css + js + assets) is
+//     worth a review even when each file is small.
+export const REVIEWER_LARGE_DIFF_CHARS = 50000;
+export const REVIEWER_LARGE_DIFF_FILES = 5;
+
+export interface ReviewerGateState {
+  verificationFailedAndFixed: boolean;
+  mutatedFileCount: number;
+  mutatedChars: number;
+  isFirstBuildOfSession: boolean;
+}
+
+export function shouldRunReviewerPass(state: ReviewerGateState): { run: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  if (state.verificationFailedAndFixed) reasons.push('verification failed and was fixed this turn');
+  if (state.mutatedChars >= REVIEWER_LARGE_DIFF_CHARS) reasons.push(`large diff: ${state.mutatedChars} chars written (>= ${REVIEWER_LARGE_DIFF_CHARS})`);
+  if (state.mutatedFileCount >= REVIEWER_LARGE_DIFF_FILES) reasons.push(`large diff: ${state.mutatedFileCount} files mutated (>= ${REVIEWER_LARGE_DIFF_FILES})`);
+  if (state.isFirstBuildOfSession) reasons.push('first build of session');
+  return { run: reasons.length > 0, reasons };
+}
+
+// Chars actually written by one file-write tool call — the reviewer gate's
+// "large diff" signal. Mirrors the executor's arg shapes in geminiService
+// (write_to_file/fileWrite: CodeContent|content; replace_file_content/
+// fileEdit: ReplacementContent|newText; multi_replace_file_content:
+// ReplacementChunks[].ReplacementContent). Unknown shapes count 0.
+export function writtenCharsForToolCall(toolName: string, args: any): number {
+  if (!args || typeof args !== 'object') return 0;
+  if (toolName === 'write_to_file' || toolName === 'fileWrite') {
+    const code = args.CodeContent !== undefined ? args.CodeContent : args.content;
+    return typeof code === 'string' ? code.length : 0;
+  }
+  if (toolName === 'replace_file_content' || toolName === 'fileEdit') {
+    const rep = args.ReplacementContent !== undefined ? args.ReplacementContent : args.newText;
+    return typeof rep === 'string' ? rep.length : 0;
+  }
+  if (toolName === 'multi_replace_file_content') {
+    const chunks = Array.isArray(args.ReplacementChunks) ? args.ReplacementChunks : [];
+    return chunks.reduce((n: number, c: any) => n + (typeof c?.ReplacementContent === 'string' ? c.ReplacementContent.length : 0), 0);
+  }
+  return 0;
+}
+
+// STEP 8 (P1): does this session already have a built site? "First build
+// of session" = no projects/<session>/index.html on disk when the turn
+// starts. Same location the preview target and buildReviewBrief use.
+export async function sessionHasPriorBuild(sessionId: string | undefined): Promise<boolean> {
+  const dirName = sessionId
+    ? `projects/${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+    : 'projects';
+  try {
+    await fs.stat(path.resolve(process.cwd(), dirName, 'index.html'));
+    return true;
+  } catch {
+    return false;
+  }
+}
 // FreeLLMAPI auto strategies to rotate through when the router errors.
 const FREELLMAPI_AUTO_STRATEGIES = ['auto:balanced', 'auto:fast', 'auto:reliable', 'auto:smart', 'auto:cheap'];
 
@@ -1581,6 +1653,11 @@ async function streamOpenAICompatible(
   let consecutiveToolFailures = 0;
   const toolCallCounts = new Map<string, number>();
   const mutatedFiles = new Set<string>();
+  // STEP 8 (P1): total chars written this turn — the reviewer gate's
+  // "large diff" signal. Accumulated in noteToolCall (successful writes
+  // only); counts the new content, so a 1-line edit to a big file stays
+  // small while a full-page write counts in full.
+  let mutatedChars = 0;
   let escalatedToHydrogen = false;
 
   /** Compact handoff brief (~200-300 tokens): what was done, key files, tool
@@ -1625,6 +1702,9 @@ async function streamOpenAICompatible(
     if (['write_to_file', 'fileWrite', 'replace_file_content', 'fileEdit', 'multi_replace_file_content'].includes(toolName)) {
       const fp = toolResult?.cleanPath || args?.path || args?.filePath || args?.file || '';
       if (fp) mutatedFiles.add(String(fp));
+      // STEP 8 (P1): only successful writes grow the diff — a refused or
+      // failed write changed nothing on disk.
+      if (!failed) mutatedChars += writtenCharsForToolCall(toolName, args);
     }
     if (escalatedToHydrogen) return;
     const isCheapLoop = cheapChain().includes(targetModel) || targetModel.startsWith('auto:');
@@ -1654,6 +1734,10 @@ async function streamOpenAICompatible(
   let planCompleted = false;
   let verificationDone = false;
   let reviewed = false;
+  // STEP 8 (P1): sticky for the turn — set the first time verification
+  // fails, never cleared, so a later passing verification still counts as
+  // "failed and was fixed" for the reviewer gate.
+  let verificationFailedThisTurn = false;
   let repairRounds = 0;
   let lastVerificationBrief = '';
 
@@ -2059,6 +2143,10 @@ The server will execute it immediately and send back the result so you can conti
         if (!verification.ok) {
           lastVerificationBrief = verification.brief;
           lastFailureForLesson = verification.brief;
+          // STEP 8 (P1): condition (a) for the reviewer gate — a real
+          // defect slipped through once this turn; the repair deserves a
+          // second pair of eyes even if the diff is small.
+          verificationFailedThisTurn = true;
           repairRounds++;
           openAiMessages.push({ role: 'assistant', content: roundText || 'Verifying build.' });
           openAiMessages.push({ role: 'user', content: `[BUILD VERIFICATION FAILED — repair round ${repairRounds}/${MAX_REPAIR_ROUNDS}]:\n- ${verification.brief}\nFix every issue above in the workspace files with the file tools, then stop. Do not narrate the fix, just do it.` });
@@ -2078,17 +2166,34 @@ The server will execute it immediately and send back the result so you can conti
       }
       if (!reviewed) {
         reviewed = true;
-        if (teamEnabled) sendEvent({ type: 'agent_status', agent: 'reviewer', status: 'working' });
-        const brief = await buildReviewBrief(systemOptions.sessionId, rawUserPrompt);
-        const review = await runReviewerPass(endpoint, apiKey, targetModel, headers, brief, usageLedger);
-        if (teamEnabled) sendEvent({ type: 'agent_status', agent: 'reviewer', status: review.approved ? 'done' : 'failed' });
-        if (!review.approved) {
-          lastFailureForLesson = `Reviewer: ${review.findings.slice(0, 300)}`;
-          repairRounds++;
-          openAiMessages.push({ role: 'assistant', content: roundText || 'Reviewing build.' });
-          openAiMessages.push({ role: 'user', content: `[REVIEWER PASS — repair round ${repairRounds}/${MAX_REPAIR_ROUNDS}]:\n${review.findings}\nFix every issue above in the workspace files with the file tools, then stop.` });
-          sendEvent({ type: 'action', action: `🔍 Reviewer found issues — repair round ${repairRounds}...` });
-          continue;
+        // STEP 8 (P1): conditional reviewer — run ONLY when the build
+        // warrants it (verification failed-and-was-fixed, large diff, or
+        // first build of session). A small clean build skips the 1 call +
+        // ~2,000-token brief; the skip is logged so the activity feed
+        // shows the decision. `reviewed` stays true for this pass, but a
+        // later write resets it (see the write branches above) and the
+        // gate re-evaluates with the grown diff / new failure state.
+        const gate = shouldRunReviewerPass({
+          verificationFailedAndFixed: verificationFailedThisTurn,
+          mutatedFileCount: mutatedFiles.size,
+          mutatedChars,
+          isFirstBuildOfSession: systemOptions.isFirstBuildOfSession ?? false,
+        });
+        if (!gate.run) {
+          sendEvent({ type: 'action', action: `⏭️ Reviewer skipped — small clean build (${mutatedChars} chars in ${mutatedFiles.size} file(s), verification passed first try).` });
+        } else {
+          if (teamEnabled) sendEvent({ type: 'agent_status', agent: 'reviewer', status: 'working' });
+          const brief = await buildReviewBrief(systemOptions.sessionId, rawUserPrompt);
+          const review = await runReviewerPass(endpoint, apiKey, targetModel, headers, brief, usageLedger);
+          if (teamEnabled) sendEvent({ type: 'agent_status', agent: 'reviewer', status: review.approved ? 'done' : 'failed' });
+          if (!review.approved) {
+            lastFailureForLesson = `Reviewer: ${review.findings.slice(0, 300)}`;
+            repairRounds++;
+            openAiMessages.push({ role: 'assistant', content: roundText || 'Reviewing build.' });
+            openAiMessages.push({ role: 'user', content: `[REVIEWER PASS — repair round ${repairRounds}/${MAX_REPAIR_ROUNDS}]:\n${review.findings}\nFix every issue above in the workspace files with the file tools, then stop.` });
+            sendEvent({ type: 'action', action: `🔍 Reviewer found issues — repair round ${repairRounds}...` });
+            continue;
+          }
         }
       }
     }
@@ -2388,6 +2493,12 @@ export async function handleOrchestratedChat(
     multiAgent,
     sessionId,
   };
+  // STEP 8 (P1): snapshot ONCE per turn, before any key attempt writes
+  // files, whether this session already has a built site. Snapshotted
+  // here — not inside the agent loop — so a key retry after a failed
+  // attempt does not mistake this turn's own writes for a prior build.
+  // The reviewer gate reads it as "first build of session".
+  systemOptions.isFirstBuildOfSession = !(await sessionHasPriorBuild(sessionId));
   const explicitGeminiModel = selectedModel && selectedModel !== 'Default' && selectedModel !== 'auto'
     ? normalizeModelName('gemini', selectedModel)
     : null;

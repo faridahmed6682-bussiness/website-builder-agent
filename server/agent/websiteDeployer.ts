@@ -29,6 +29,12 @@ export interface SystemInstructionOptions {
   // session start so the agent remembers durable facts and past mistakes.
   memory?: string;
   lessons?: string;
+  // STEP 8 (P1): NOT prompt content — a per-turn flag snapshotted by
+  // handleOrchestratedChat (before any key attempt writes files) saying
+  // whether this session already has a built site. The reviewer gate in
+  // streamOpenAICompatible reads it to decide if this is the session's
+  // first build (review-worthy) or a follow-up (usually not).
+  isFirstBuildOfSession?: boolean;
 }
 
 export function getNexusSystemInstruction(mode: string = 'general', options: SystemInstructionOptions = {}): string {
