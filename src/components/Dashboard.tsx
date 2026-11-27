@@ -99,7 +99,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ open, onClose, onSelectPro
   const [bulkResults, setBulkResults] = useState<BulkResult[]>([]);
 
   const detectProvider = (line: string): 'gemini' | 'groq' | 'openrouter' | null => {
-    if (line.startsWith('AIza')) return 'gemini';
+    if (line.startsWith('AIza') || line.startsWith('AQ.')) return 'gemini';
     if (line.startsWith('gsk_')) return 'groq';
     if (line.startsWith('sk-or-v1-')) return 'openrouter';
     return null;
@@ -115,7 +115,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ open, onClose, onSelectPro
       const provider = detectProvider(line);
       const hint = `${line.slice(0, 4)}…`;
       if (!provider) {
-        results.push({ provider: 'অচেনা', hint, status: 'unrecognized', message: 'প্রোভাইডার চেনা যায়নি — AIza / gsk_ / sk-or-v1- দিয়ে শুরু হতে হবে।' });
+        results.push({ provider: 'অচেনা', hint, status: 'unrecognized', message: 'প্রোভাইডার চেনা যায়নি — AIza / AQ. / gsk_ / sk-or-v1- দিয়ে শুরু হতে হবে।' });
         continue;
       }
       try {
@@ -235,12 +235,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ open, onClose, onSelectPro
               <div className="mt-5 border-t border-slate-800 pt-4">
                 <p className="text-xs font-semibold text-white mb-1">একসাথে অনেক key বসান (বাল্ক)</p>
                 <p className="text-[11px] text-slate-500 mb-2 leading-relaxed">
-                  সব key একসাথে পেস্ট করুন — এক লাইনে একটা key। Gemini (AIza…), Groq (gsk_…) ও OpenRouter (sk-or-v1-…) নিজে থেকেই চেনা হবে। Key-র মান কোথাও দেখানো হয় না।
+                  সব key একসাথে পেস্ট করুন — এক লাইনে একটা key। Gemini (AIza… / AQ.…), Groq (gsk_…) ও OpenRouter (sk-or-v1-…) নিজে থেকেই চেনা হবে। Key-র মান কোথাও দেখানো হয় না।
                 </p>
                 <textarea
                   value={bulkText}
                   onChange={(e) => setBulkText(e.target.value)}
-                  placeholder={'AIza…\ngsk_…\nsk-or-v1-…'}
+                  placeholder={'AIza… / AQ.…\ngsk_…\nsk-or-v1-…'}
                   rows={4}
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none font-mono resize-y"
                 />
