@@ -79,7 +79,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
 const { refreshCatalog, getChainForTask, nextAfterFailure, isModelExcluded } =
   await import('../server/agent/modelChain.ts');
 const { routeChatCompletion } = await import('../server/router/index.ts');
-const { recordRouterKeyFailure, selectRouterKey, routerKeyStatus } =
+const { recordRouterKeyFailure, listRouterKeys, routerKeyStatus } =
   await import('../server/router/keys.ts');
 const { parseJsonSafe, SERVER_WAKING_MESSAGE } =
   await import('../src/components/SecretsModal.tsx');
@@ -142,7 +142,10 @@ ok('all keys tried on model 1 before dropping to model 2 (same-model rotation)',
 });
 
 // 5. HTTP-date Retry-After ----------------------------------------------------
-const key = await selectRouterKey('gemini');
+// (STEP 16 (d): selectRouterKey was deleted as dead production code; the
+// proof picks its key from the real rotation list, listRouterKeys().)
+const geminiKeys = await listRouterKeys('gemini');
+const key = geminiKeys[0];
 assert.ok(key, 'expected a gemini key');
 const httpDate = new Date(Date.now() + 300_000).toUTCString(); // 300 s out
 await recordRouterKeyFailure(key.id, 429, httpDate, 'rate limit');

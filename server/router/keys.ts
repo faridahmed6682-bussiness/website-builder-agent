@@ -58,7 +58,6 @@ export interface RouterKeyStatus {
 
 let keys: RouterKey[] = [];
 let keysLoaded = false;
-let rrIndex = 0;
 
 // No provider keys at all: the chat must say so in Bengali and point at
 // the Keys tab — never rotate through keyless providers and never offer a
@@ -207,41 +206,15 @@ export async function removeRouterKey(id: string): Promise<boolean> {
   return true;
 }
 
-/** Round-robin pick of a healthy key for a provider (skips cooldowns). Falls back to the synced secrets pool when the router pool has no key for the provider. `excludeIds` skips keys already tried this turn, so the caller can rotate through every key for one model. */
-export async function selectRouterKey(provider: RouterProvider, excludeIds?: Set<string>): Promise<RouterKey | null> {
-  await loadKeys();
-  const now = Date.now();
-  const pool = keys.filter((k) => k.provider === provider && !(excludeIds?.has(k.id)));
-  if (pool.length) {
-    const healthy = pool.filter((k) => k.cooldownUntil <= now);
-    const candidates = healthy.length ? healthy : pool;
-    // Prefer the least-used healthy key, then round-robin.
-    candidates.sort((a, b) => a.uses - b.uses || a.id.localeCompare(b.id));
-    const pick = candidates[rrIndex++ % candidates.length];
-    pick.uses++;
-    return pick;
-  }
-  // No router-pool key for this provider — use a key from the synced
-  // secrets pool (added in the "Free API Keys" panel). Same least-used
-  // rotation, skipping keys on a cooldown recorded by a recent failure.
-  const secrets = (await readSecretsPool()).filter((k) => k.provider === provider && !(excludeIds?.has(k.id)));
-  if (!secrets.length) return null;
-  const healthySecrets = secrets.filter((k) => (secretsCooldownUntil.get(k.id) || 0) <= now);
-  const candidates = healthySecrets.length ? healthySecrets : secrets;
-  candidates.sort((a, b) => (secretsUses.get(a.id) || 0) - (secretsUses.get(b.id) || 0) || a.id.localeCompare(b.id));
-  const pick = candidates[rrIndex++ % candidates.length];
-  secretsUses.set(pick.id, (secretsUses.get(pick.id) || 0) + 1);
-  return {
-    id: pick.id,
-    provider: pick.provider,
-    name: pick.name || `${pick.provider} key (secrets)`,
-    key: pick.apiKey,
-    source: 'secrets',
-    cooldownUntil: 0,
-    uses: secretsUses.get(pick.id) || 0,
-  };
-}
-
+// STEP 16 (d): selectRouterKey was DELETED, not wired in. It was dead code
+// in production — the only caller was scripts/failover-proof.mts, and its
+// excludeIds param existed only for that script. The real rotation already
+// goes through listRouterKeys() below (routeChatCompletion iterates ALL of
+// a provider's keys per model, healthy first, so every key is tried before
+// the chain drops to the next model). Wiring a second single-pick
+// round-robin path would have duplicated that merge + cooldown logic and
+// risked the two paths diverging. The proof script now picks its key from
+// listRouterKeys() instead.
 /** ALL keys for a provider (router pool + synced secrets pool), healthy
  * first, least-used first — the per-model inner key loop in
  * routeChatCompletion iterates this list so every key is tried for one
