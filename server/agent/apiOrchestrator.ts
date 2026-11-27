@@ -9,6 +9,7 @@ import { routeTurnModel, turnReasoningEffort, classifyTask, pickPlanningEffort, 
 import { getRouterApiKey, NO_PROVIDER_KEYS_MESSAGE, NO_PROVIDER_KEYS_CODE } from "../router/keys.ts";
 import { decideIntent, CASUAL_SYSTEM } from "./intentGate.ts";
 import { matchDirectCommand, getCachedToolResult, setCachedToolResult } from "./directTools.ts";
+import { buildCacheKey, getBuildCacheEntry, setBuildCacheEntry, normalizeBuildPrompt, BUILD_CACHE_MAX_HTML_BYTES } from "./buildCache.ts";
 import { readUserMemory, saveChatTurn, loadChat, listProjects, listChats } from "./memory.ts";
 import { splitHistoryWindow, ensureRollingSummary, summaryTurn } from "./historyWindow.ts";
 import { readLessons, recordLesson } from "./lessons.ts";
@@ -2326,6 +2327,8 @@ export async function handleOrchestratedChat(
     stickyKeyId?: string | null;
     imageBase64?: string;
     imageMime?: string;
+    /** STEP 13 (P1): "rebuild anyway" — skip the build-cache lookup for this turn. */
+    bypassCache?: boolean;
   },
   res: Response
 ) {
@@ -2365,7 +2368,8 @@ export async function handleOrchestratedChat(
     preferOnlyCustomKeys = false,
     stickyKeyId: reqStickyKeyId = null,
     imageBase64,
-    imageMime
+    imageMime,
+    bypassCache = false
   } = req;
   const messages = Array.isArray(rawMessages) ? rawMessages : [];
   if (messages.length === 0) {
@@ -2476,6 +2480,44 @@ export async function handleOrchestratedChat(
     sendEvent({ type: 'usage_summary', usage: totals });
     res.end();
     return;
+  }
+
+  // STEP 13 (P1): prompt/build response cache — an exact repeat of a build
+  // prompt serves the stored build with ZERO model calls: this lookup runs
+  // BEFORE the intent gate and the router, so a hit never reaches either.
+  // Key = normalised prompt + requested model + task ('coding'). Image
+  // builds are excluded (the vision brief changes the effective prompt but
+  // is not part of the key), and `bypassCache` ("rebuild anyway") skips
+  // the lookup while still storing the fresh build afterwards.
+  const isBuildTurn = isActionOrBuildPrompt(initialLastMessage);
+  const cacheModelKey = explicitGeminiModel ?? 'auto';
+  const buildCacheKeyValue = isBuildTurn && !imageBase64
+    ? buildCacheKey(initialLastMessage, cacheModelKey, 'coding')
+    : null;
+  if (buildCacheKeyValue && !bypassCache) {
+    const hit = await getBuildCacheEntry(buildCacheKeyValue);
+    if (hit) {
+      // Restore the stored HTML to this session's preview file so the
+      // Live Preview iframe shows the cached build.
+      try {
+        const absPreview = path.resolve(process.cwd(), sessionPreviewTarget);
+        await fs.mkdir(path.dirname(absPreview), { recursive: true });
+        await fs.writeFile(absPreview, hit.html, 'utf-8');
+      } catch { /* preview restore failed — client still gets HTML via preview_ready */ }
+      const cachedPreviewUrl = hit.previewUrl || `/${sessionPreviewTarget}`;
+      sendEvent({ type: 'action', action: '⚡ Cached build — আগের তৈরি সাইটটি ক্যাশ থেকে দেওয়া হচ্ছে, কোনো মডেল কল হয়নি।' });
+      sendEvent({ type: 'text', text: hit.reply });
+      finalAssistantText = hit.reply;
+      sendEvent({ type: 'file_modified', filePath: sessionPreviewTarget, action: 'created' });
+      sendEvent({ type: 'preview_ready', url: cachedPreviewUrl, sessionId, html: hit.html, timestamp: Date.now(), cached: true });
+      sendEvent({ type: 'done', fullText: hit.reply, model: hit.builtByModel || hit.model, cached: true, cacheHits: hit.hits, apiCalls: 0 });
+      await saveChatTurn(sessionId || 'default', initialLastMessage, hit.reply).catch(() => {});
+      const totals = usageTotals(usageLedger);
+      recordTurnUsage(sessionId || 'default', totals);
+      sendEvent({ type: 'usage_summary', usage: totals });
+      res.end();
+      return;
+    }
   }
 
   // Memory + lessons: read at session start (the model is stateless — this
@@ -2721,6 +2763,16 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
   // blip on the last key ended the turn with no second chance). The retry
   // passes each fire at most once and reset attempts, so the loop still
   // terminates; mixed failures break out at the first "no key left".
+  // STEP 13: mtime of the session preview BEFORE this turn — the store step
+  // only caches when the turn actually (re)wrote the preview file, so a
+  // turn that only talked never caches the previous turn's site.
+  let previewMtimeBefore: number | null = null;
+  try {
+    previewMtimeBefore = (await fs.stat(path.resolve(process.cwd(), sessionPreviewTarget))).mtimeMs;
+  } catch { /* no preview yet — any file afterwards is this turn's work */ }
+  // STEP 13: model that actually produced this turn's build (for the cache entry).
+  let lastUsedModel: string | null = null;
+
   const maxAttempts = activePool.length * 2;
   let attempts = 0;
   let succeeded = false;
@@ -2992,6 +3044,7 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
           if (geminiChainErr) throw geminiChainErr;
 
           recordKeySuccess(key.id);
+          lastUsedModel = usedModel;
           addSystemLog({
             level: 'success',
             category: 'execution',
@@ -3105,6 +3158,7 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
           );
 
           recordKeySuccess(key.id);
+          lastUsedModel = targetModel;
           addSystemLog({
             level: 'success',
             category: 'execution',
@@ -3385,6 +3439,7 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
         );
 
         succeeded = true;
+        lastUsedModel = fallbackModel;
         persistStickyKeyId("studio_primary");
 
         const deployed = await autoDeployWebsiteFromText(fullText, sessionId);
@@ -3459,6 +3514,35 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
       error: finalUserError,
       isAuthError: finalIsAuthError
     });
+  }
+
+  // STEP 13 (P1): store a successful build in the response cache so an
+  // exact repeat serves from cache with zero model calls. Only when this
+  // turn actually (re)wrote the session preview file (mtime guard above)
+  // and the HTML is within the size bound — a rebuild-anyway turn also
+  // stores, refreshing the entry with the fresh build.
+  if (succeeded && isBuildTurn && finalAssistantText && buildCacheKeyValue) {
+    try {
+      const absPreview = path.resolve(process.cwd(), sessionPreviewTarget);
+      const st = await fs.stat(absPreview);
+      const rewrotePreview = previewMtimeBefore === null || st.mtimeMs > previewMtimeBefore;
+      if (rewrotePreview && st.size > 40 && st.size <= BUILD_CACHE_MAX_HTML_BYTES) {
+        const html = await fs.readFile(absPreview, 'utf-8');
+        await setBuildCacheEntry({
+          key: buildCacheKeyValue,
+          prompt: normalizeBuildPrompt(initialLastMessage),
+          model: cacheModelKey,
+          task: 'coding',
+          builtByModel: lastUsedModel || undefined,
+          reply: finalAssistantText,
+          html,
+          previewUrl: `/${sessionPreviewTarget}`,
+          createdAt: Date.now(),
+          lastServedAt: Date.now(),
+          hits: 0,
+        });
+      }
+    } catch { /* preview unreadable — skip caching this turn */ }
   }
 
   // Save the turn to server chat history + record usage for the UI.

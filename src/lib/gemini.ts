@@ -33,6 +33,10 @@ export interface ChatAIOptions {
   /** Vision: base64 image (client-downscaled) + mime, sent to the server. */
   imageBase64?: string;
   imageMime?: string;
+  /** STEP 13 (P1): "rebuild anyway" — bypass the build cache for this turn. */
+  bypassCache?: boolean;
+  /** STEP 13 (P1): fired when the server served this turn from the build cache. */
+  onCachedBuild?: (info: { model?: string; cacheHits?: number }) => void;
   /** Per-turn usage (requests/tokens per model/step) for the usage display. */
   onUsage?: (usage: any) => void;
   /** Multi-agent team status (planner/coder/reviewer/tester). */
@@ -79,6 +83,7 @@ export async function chatWithAI(
       multiAgent: options?.multiAgent,
       imageBase64: options?.imageBase64,
       imageMime: options?.imageMime,
+      bypassCache: options?.bypassCache,
     }),
   });
 
@@ -220,6 +225,10 @@ export async function chatWithAI(
         case 'done':
           if (event.activeKeyId || event.keyId) {
             setLastSuccessfulKeyId(event.activeKeyId || event.keyId);
+          }
+          // STEP 13 (P1): server served this build from cache — no model call.
+          if (event.cached && options?.onCachedBuild) {
+            options.onCachedBuild({ model: event.model, cacheHits: event.cacheHits });
           }
           break;
       }

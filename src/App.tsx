@@ -166,6 +166,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [cooldown, setCooldown] = useState(0);
   const [previewUrl, setPreviewUrl] = useState('/projects/index.html');
+  // STEP 13 (P1): set when the last build was served from the build cache
+  // (no model call) — shows the "cached build" label + "rebuild anyway".
+  const [cachedBuild, setCachedBuild] = useState<{ model?: string; cacheHits?: number } | null>(null);
   const [activeMode, setActiveMode] = useState<'general' | 'coding' | 'image' | 'search'>('coding');
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [activeCoderTab, setActiveCoderTab] = useState<'chat' | 'preview' | 'artifacts'>('chat');
@@ -357,7 +360,7 @@ export default function App() {
     setTimeout(() => setCopiedCode(false), 2500);
   };
 
-  const handleSend = async (overrideText?: string | React.MouseEvent) => {
+  const handleSend = async (overrideText?: string | React.MouseEvent, options?: { bypassCache?: boolean }) => {
     const textToSend = typeof overrideText === 'string' ? overrideText : input;
     if (!textToSend.trim() || isLoading || isSendingRef.current || cooldown > 0) return;
     isSendingRef.current = true;
@@ -367,6 +370,9 @@ export default function App() {
     if (imageForThisTurn) userMessage.imageUrl = imageForThisTurn.dataUrl;
     setTeamStatuses([]);
     setLastUsage(null);
+    // STEP 13 (P1): a fresh turn clears the cached-build label until the
+    // server says this turn was served from cache.
+    setCachedBuild(null);
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
     setInput('');
@@ -512,6 +518,9 @@ export default function App() {
           multiAgent,
           imageBase64: imageForThisTurn?.base64,
           imageMime: imageForThisTurn?.mime,
+          // STEP 13 (P1): "rebuild anyway" bypasses the build cache.
+          bypassCache: options?.bypassCache,
+          onCachedBuild: (info) => setCachedBuild(info),
           onUsage: (u) => setLastUsage(u),
           onAgentStatus: (st) => {
             setTeamStatuses((prev) => {
@@ -604,10 +613,30 @@ export default function App() {
     }
   };
 
+  // STEP 13 (P1): "Rebuild anyway" — resend the last user prompt with the
+  // build cache bypassed, so the model builds fresh instead of serving the
+  // cached site.
+  const handleRebuildAnyway = () => {
+    if (isLoading || isSendingRef.current) return;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m: any = messages[i];
+      if (m?.role === 'user') {
+        const text = m?.parts?.map((p: any) => p?.text || '').join(' ').trim()
+          || (typeof m?.text === 'string' ? m.text : '');
+        if (text) {
+          setActionLog('🔄 ক্যাশ বাইপাস করে নতুন করে বানানো হচ্ছে...');
+          handleSend(text, { bypassCache: true });
+        }
+        return;
+      }
+    }
+  };
+
   const handleNewChat = () => {
     setCurrentSessionId(null);
     setCurrentSessionTitle('New Canvas');
     setCurrentSessionHtml(null);
+    setCachedBuild(null);
     setPreviewUrl(`${window.location.origin}/projects/index.html?t=${Date.now()}`);
     setMessages([]);
     setError(null);
@@ -626,6 +655,7 @@ export default function App() {
         setMessages(session.messages || []);
         setActiveMode((session.mode as any) || 'coding');
         setError(null);
+        setCachedBuild(null);
         setActivityLogs([]);
         setActionSteps([]);
         setModifiedFiles([]);
@@ -1320,6 +1350,27 @@ export default function App() {
 
               {/* Viewport & Action Controls */}
               <div className="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
+                {/* STEP 13 (P1): cached-build label + "rebuild anyway" — shown
+                    only when the last build was served from the build cache
+                    (zero model calls). */}
+                {cachedBuild && (
+                  <>
+                    <span
+                      className="hidden sm:inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30 flex-shrink-0"
+                      title={cachedBuild.model ? `Cached build (built by ${cachedBuild.model})${cachedBuild.cacheHits ? ` · served from cache ${cachedBuild.cacheHits}×` : ''}` : 'Cached build — served from cache, no model call'}
+                    >
+                      ⚡ Cached build
+                    </span>
+                    <button
+                      onClick={handleRebuildAnyway}
+                      disabled={isLoading}
+                      className="px-2 py-1 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-300 text-[11px] font-semibold hover:bg-amber-500/20 disabled:opacity-50 transition-colors flex-shrink-0"
+                      title="ক্যাশ বাইপাস করে মডেল দিয়ে নতুন করে বানান"
+                    >
+                      Rebuild anyway
+                    </button>
+                  </>
+                )}
                 {/* Canvas vs Code View Mode Toggle */}
                 <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800 text-[11px] font-semibold">
                   <button
