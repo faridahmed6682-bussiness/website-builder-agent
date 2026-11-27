@@ -15,7 +15,7 @@ import { splitHistoryWindow, ensureRollingSummary, summaryTurn } from "./history
 import { readLessons, recordLesson } from "./lessons.ts";
 import { newTurnUsage, addLlmStep, addToolCall, usageTotals, recordTurnUsage, costTierOfModel, estimateTokens, toolsSchemaTokensEstimate, sessionUsageSummary, type TurnUsage } from "./usage.ts";
 import { parseSseUsageChunk } from "../router/index.ts";
-import { describeImage } from "./vision.ts";
+import { describeImage, asksAboutImage } from "./vision.ts";
 import { CODING_SKILLS_REGISTRY } from "./skillsRegistry.ts";
 import {
   getChainForTask, nextAfterFailure, noteModelAttempt, recordModelSuccess, recordModelFailure,
@@ -2750,20 +2750,8 @@ export async function handleOrchestratedChat(
   let { history, lastMessage: initialLastMessage } = prepareGeminiHistoryAndLastMessage(messagesForModel);
   let lastMessage = initialLastMessage;
 
-  // Vision: an uploaded image is described first (free Gemini, planning
-  // chain); the design brief is injected into the prompt and the agent
-  // builds a site matching it.
-  if (imageBase64) {
-    try {
-      sendEvent({ type: 'action', action: '🖼️ Image received — describing the design...' });
-      const { brief, model } = await describeImage(imageBase64, imageMime || 'image/jpeg');
-      lastMessage += `\n\n[IMAGE DESIGN BRIEF — the user uploaded a design image. Build a site matching this design:\n${brief}]`;
-      addLlmStep(usageLedger, { kind: 'vision', model, tier: costTierOfModel(model), promptTokens: 1000, completionTokens: estimateTokens(brief), estimated: true, note: 'vision description (image tokens estimated)' });
-    } catch (err: any) {
-      sendEvent({ type: 'action', action: `⚠️ Could not describe the uploaded image (${String(err?.message || err).slice(0, 120)}). Building from your text instead.` });
-    }
-  }
-
+  // (STEP 17: vision moved below — after the intent gate — so casual and
+  // direct-command turns with an image never pay for a description.)
   // --- Tier 0: rule-based direct commands (zero model calls) ---------------
   // Deterministic commands (show file / list files / git status / search)
   // run as code and go straight to the UI — the model is never involved.
@@ -2859,12 +2847,38 @@ export async function handleOrchestratedChat(
     const intent = await decideIntent(initialLastMessage, history);
     isConversationalPrompt = intent === 'casual';
   }
+
+  // STEP 17 (P2/F6): vision AFTER the intent gate, not before. describeImage
+  // runs on the planning (Hydrogen) chain, so describing the image before
+  // classification burned a Hydrogen vision call on EVERY turn with an image
+  // — including a plain "hi", where the brief was then ignored (the casual
+  // answer uses the user's text, not the brief). Classify intent first
+  // (cheap/local) and only describe the image when the turn actually needs
+  // it: a task turn (build from the design), or a casual turn that asks
+  // about the image itself ("what's in this image?", "describe this
+  // image"). Direct commands already returned above, so they never pay
+  // for vision either. A failure here still falls back to the user's text.
+  if (imageBase64 && (!isConversationalPrompt || asksAboutImage(initialLastMessage))) {
+    try {
+      sendEvent({ type: 'action', action: '🖼️ Image received — describing the design...' });
+      const { brief, model } = await describeImage(imageBase64, imageMime || 'image/jpeg');
+      lastMessage += `\n\n[IMAGE DESIGN BRIEF — the user uploaded a design image. Build a site matching this design:\n${brief}]`;
+      addLlmStep(usageLedger, { kind: 'vision', model, tier: costTierOfModel(model), promptTokens: 1000, completionTokens: estimateTokens(brief), estimated: true, note: 'vision description (image tokens estimated)' });
+    } catch (err: any) {
+      sendEvent({ type: 'action', action: `⚠️ Could not describe the uploaded image (${String(err?.message || err).slice(0, 120)}). Building from your text instead.` });
+    }
+  }
   if (isConversationalPrompt) {
     try {
       const mem = (systemOptions.memory || '').slice(0, 1500);
+      // STEP 17 (P2/F6): answer from `lastMessage`, not the raw user text —
+      // when this casual turn asked about an uploaded image, the vision
+      // brief was appended to `lastMessage` above and the cheap model needs
+      // it to answer (it cannot see the image). With no image the two are
+      // identical, so plain casual turns are unchanged.
       const { text, model, usage } = await chatOnce({
         system: CASUAL_SYSTEM + (mem ? `\n\nUSER MEMORY (durable facts):\n${mem}` : ''),
-        user: initialLastMessage,
+        user: lastMessage,
         chain: chatChain(),
         maxTokens: 800,
         timeoutMs: 60000,

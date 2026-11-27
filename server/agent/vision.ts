@@ -43,3 +43,20 @@ export async function describeImage(imageBase64: string, mime = 'image/jpeg'): P
   if (!brief) throw new Error('Vision model returned an empty description.');
   return { brief, model };
 }
+
+// STEP 17 (P2/F6): does this message ask about the uploaded image itself?
+// Local-only check, no model call. An image noun (image / picture / photo /
+// screenshot / design, ছবি / স্ক্রিনশট / ডিজাইন) PLUS a question mark or a
+// describe/ask verb ("what", "describe", "tell", "show", "explain", "look",
+// "কী", "বলো", "দেখো", ...) means the answer needs the image content —
+// e.g. "what's in this image?", "describe this image", "এই ছবিটা কেমন?".
+// A bare greeting or praise ("hi", "nice pic!") does not: the image is
+// incidental there and no vision call is warranted.
+const IMAGE_NOUN_RE = /\b(image|picture|photo|screenshot|pic|design)\b|ছবি|স্ক্রিনশট|ডিজাইন/i;
+const IMAGE_QUESTION_RE = /[?？]|\b(what|describe|tell|show|explain|look|see|how|why)\b|কী|কি|ব্যাখ্যা|বুঝিয়ে|বুঝিয়ে|দেখো|বলো/i;
+
+export function asksAboutImage(prompt: string): boolean {
+  const text = (prompt || '').trim();
+  if (!text) return false;
+  return IMAGE_NOUN_RE.test(text) && IMAGE_QUESTION_RE.test(text);
+}
