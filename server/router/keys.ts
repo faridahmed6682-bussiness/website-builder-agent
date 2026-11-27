@@ -37,7 +37,7 @@ export interface RouterKey {
   provider: RouterProvider;
   name: string;
   key: string;
-  source: 'env' | 'dashboard';
+  source: 'env' | 'dashboard' | 'secrets';
   cooldownUntil: number;
   limitKind?: RateLimitKind | null;
   lastError?: string;
@@ -48,7 +48,7 @@ export interface RouterKeyStatus {
   id: string;
   provider: RouterProvider;
   name: string;
-  source: 'env' | 'dashboard';
+  source: 'env' | 'dashboard' | 'secrets';
   status: 'live' | 'limited' | 'cooldown';
   limitKind?: RateLimitKind | null;
   limitLabel?: string;
@@ -68,10 +68,68 @@ export const NO_PROVIDER_KEYS_MESSAGE =
   'কোনো API key বসানো হয়নি। Keys ট্যাবে Gemini, Groq বা OpenRouter-এর key বসান, তারপর আবার চেষ্টা করুন।';
 export const NO_PROVIDER_KEYS_CODE = 'NO_PROVIDER_KEYS';
 
-/** True when at least one real provider key is configured (env or dashboard). */
+// ---------------------------------------------------------------------------
+// Synced secrets pool (the "Free API Keys" panel)
+// ---------------------------------------------------------------------------
+// The user's keys live in TWO stores: this router's pool (env lists +
+// data/router-keys.json, fed by the Dashboard Keys tab) and the orchestrator's
+// synced secrets pool (.secrets.json, fed by the "Free API Keys" panel and
+// synced from the browser on every save). The chat path (routeChatCompletion
+// via chatOnce) only saw the router pool — so a key added in the Secrets
+// panel worked for the agent loop (which reads .secrets.json) but the casual
+// greeting still said "no key" from any other browser (live bug 2026-11-27:
+// 24 healthy synced keys, greeting answered NO_PROVIDER_KEYS, Dashboard Keys
+// tab said "No provider keys yet"). The router reads the secrets pool here
+// so both pools count for the no-key gate, for per-provider selection, and
+// for the Keys-tab list. Key VALUES are never returned — only ids, provider,
+// name and live/cooldown status.
+const SECRETS_FILE = path.join(process.cwd(), '.secrets.json');
+
+interface SecretsPoolEntry {
+  id: string;
+  provider: RouterProvider;
+  apiKey: string;
+  name?: string;
+  model?: string;
+  isActive?: boolean;
+}
+
+async function readSecretsPool(): Promise<SecretsPoolEntry[]> {
+  try {
+    const raw = await fs.readFile(SECRETS_FILE, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((k: any) => k
+        && (k.provider === 'gemini' || k.provider === 'groq' || k.provider === 'openrouter')
+        && typeof k.apiKey === 'string' && k.apiKey.trim()
+        && k.isActive !== false
+        && k.id !== 'env-freellmapi'
+        && k.apiKey.trim() !== ROUTER_API_KEY)
+      .map((k: any) => ({
+        id: String(k.id || ''),
+        provider: k.provider as RouterProvider,
+        apiKey: k.apiKey.trim(),
+        name: typeof k.name === 'string' ? k.name : undefined,
+        model: typeof k.model === 'string' ? k.model : undefined,
+        isActive: k.isActive,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+// In-memory runtime state for secrets-pool keys: the router pool keeps its
+// own cooldown/uses on the RouterKey objects, but secrets keys are re-read
+// from disk, so their cooldowns and use counts live here.
+const secretsCooldownUntil = new Map<string, number>();
+const secretsUses = new Map<string, number>();
+
+/** True when at least one real provider key is configured (env, dashboard, or the synced secrets pool). */
 export async function hasAnyRouterKey(): Promise<boolean> {
   await loadKeys();
-  return keys.length > 0;
+  if (keys.length > 0) return true;
+  return (await readSecretsPool()).length > 0;
 }
 
 // The router's own API key (protects /v1/*): env override or boot-generated.
@@ -130,6 +188,9 @@ export async function addRouterKey(provider: RouterProvider, key: string): Promi
   const clean = (key || '').trim();
   if (!clean) throw new Error('Key is empty.');
   if (keys.some((k) => k.key === clean)) throw new Error('This key is already in the pool.');
+  // The same value in the synced secrets pool is the same key — don't add
+  // a second copy of it to the router pool.
+  if ((await readSecretsPool()).some((k) => k.apiKey === clean)) throw new Error('This key is already in the pool.');
   const id = `dashboard-${provider}-${Date.now().toString(36)}`;
   keys.push({ id, provider, name: `${provider} key (dashboard)`, key: clean, source: 'dashboard', cooldownUntil: 0, uses: 0 });
   await saveDashboardKeys();
@@ -146,25 +207,64 @@ export async function removeRouterKey(id: string): Promise<boolean> {
   return true;
 }
 
-/** Round-robin pick of a healthy key for a provider (skips cooldowns). */
+/** Round-robin pick of a healthy key for a provider (skips cooldowns). Falls back to the synced secrets pool when the router pool has no key for the provider. */
 export async function selectRouterKey(provider: RouterProvider): Promise<RouterKey | null> {
   await loadKeys();
   const now = Date.now();
   const pool = keys.filter((k) => k.provider === provider);
-  if (!pool.length) return null;
-  const healthy = pool.filter((k) => k.cooldownUntil <= now);
-  const candidates = healthy.length ? healthy : pool;
-  // Prefer the least-used healthy key, then round-robin.
-  candidates.sort((a, b) => a.uses - b.uses || a.id.localeCompare(b.id));
+  if (pool.length) {
+    const healthy = pool.filter((k) => k.cooldownUntil <= now);
+    const candidates = healthy.length ? healthy : pool;
+    // Prefer the least-used healthy key, then round-robin.
+    candidates.sort((a, b) => a.uses - b.uses || a.id.localeCompare(b.id));
+    const pick = candidates[rrIndex++ % candidates.length];
+    pick.uses++;
+    return pick;
+  }
+  // No router-pool key for this provider — use a key from the synced
+  // secrets pool (added in the "Free API Keys" panel). Same least-used
+  // rotation, skipping keys on a cooldown recorded by a recent failure.
+  const secrets = (await readSecretsPool()).filter((k) => k.provider === provider);
+  if (!secrets.length) return null;
+  const healthySecrets = secrets.filter((k) => (secretsCooldownUntil.get(k.id) || 0) <= now);
+  const candidates = healthySecrets.length ? healthySecrets : secrets;
+  candidates.sort((a, b) => (secretsUses.get(a.id) || 0) - (secretsUses.get(b.id) || 0) || a.id.localeCompare(b.id));
   const pick = candidates[rrIndex++ % candidates.length];
-  pick.uses++;
-  return pick;
+  secretsUses.set(pick.id, (secretsUses.get(pick.id) || 0) + 1);
+  return {
+    id: pick.id,
+    provider: pick.provider,
+    name: pick.name || `${pick.provider} key (secrets)`,
+    key: pick.apiKey,
+    source: 'secrets',
+    cooldownUntil: 0,
+    uses: secretsUses.get(pick.id) || 0,
+  };
 }
 
 export async function recordRouterKeyFailure(keyId: string, status?: number, retryAfter?: string | null, message?: string | null): Promise<void> {
   await loadKeys();
   const k = keys.find((x) => x.id === keyId);
-  if (!k) return;
+  if (!k) {
+    // Secrets-pool key (not in the router pool): record the cooldown in the
+    // secrets runtime map so selection skips it until the cooldown passes.
+    // 429: same rule as the router pool (RPD parks until midnight Pacific).
+    if (status === 429) {
+      const kind = classifyRateLimit(status, message);
+      if (kind === 'rpd') {
+        const now = new Date();
+        const pt = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+        const msToMidnight = (24 * 60 * 60 * 1000) - ((pt.getHours() * 3600 + pt.getMinutes() * 60 + pt.getSeconds()) * 1000 + pt.getMilliseconds());
+        secretsCooldownUntil.set(keyId, Date.now() + Math.max(msToMidnight, 60_000));
+      } else {
+        const ra = retryAfter ? parseInt(retryAfter, 10) : NaN;
+        secretsCooldownUntil.set(keyId, Date.now() + Math.max(65, Number.isFinite(ra) ? ra : 0) * 1000);
+      }
+    } else {
+      secretsCooldownUntil.set(keyId, Date.now() + 60_000);
+    }
+    return;
+  }
   if (status === 429) {
     const kind = classifyRateLimit(status, message);
     const ra = retryAfter ? parseInt(retryAfter, 10) : NaN;
@@ -188,7 +288,10 @@ export async function recordRouterKeyFailure(keyId: string, status?: number, ret
 export async function recordRouterKeySuccess(keyId: string): Promise<void> {
   await loadKeys();
   const k = keys.find((x) => x.id === keyId);
-  if (!k) return;
+  if (!k) {
+    secretsCooldownUntil.delete(keyId);
+    return;
+  }
   k.cooldownUntil = 0;
   k.limitKind = null;
   k.lastError = undefined;
@@ -197,7 +300,7 @@ export async function recordRouterKeySuccess(keyId: string): Promise<void> {
 export async function routerKeyStatus(): Promise<RouterKeyStatus[]> {
   await loadKeys();
   const now = Date.now();
-  return keys.map((k) => {
+  const list: RouterKeyStatus[] = keys.map((k) => {
     const retryInSec = k.cooldownUntil > now ? Math.ceil((k.cooldownUntil - now) / 1000) : 0;
     return {
       id: k.id,
@@ -211,6 +314,24 @@ export async function routerKeyStatus(): Promise<RouterKeyStatus[]> {
       uses: k.uses,
     };
   });
+  // Secrets-pool keys (added in the "Free API Keys" panel) are listed too,
+  // marked source 'secrets' — otherwise the Keys tab claims "No provider
+  // keys yet" while the pool has keys (live bug 2026-11-27). They are
+  // read-only here (managed in the Secrets panel, so no delete button —
+  // the Dashboard only offers delete for source 'dashboard').
+  for (const s of await readSecretsPool()) {
+    const cd = secretsCooldownUntil.get(s.id) || 0;
+    list.push({
+      id: s.id,
+      provider: s.provider,
+      name: s.name || `${s.provider} key (secrets)`,
+      source: 'secrets',
+      status: cd > now ? 'cooldown' : 'live',
+      retryInSec: cd > now ? Math.ceil((cd - now) / 1000) : undefined,
+      uses: secretsUses.get(s.id) || 0,
+    });
+  }
+  return list;
 }
 
 export async function routerKeyCounts(): Promise<Record<RouterProvider, { total: number; live: number }>> {

@@ -2336,6 +2336,17 @@ function formatDirectResult(tool: string, result: any): string {
   return text.slice(0, 8000);
 }
 
+// Transport/network failures (fetch failed, ECONNRESET, socket hang up,
+// "network error") are TRANSIENT: the provider/model/key is fine, the
+// connection broke. They must rotate like 429/5xx/timeout — next model,
+// next key, at least one retry — never a hard stop (live bug 2026-11-27: a
+// build died on "network error" with no failover and an empty Preview).
+export const NETWORK_ERROR_RE =
+  /fetch failed|network error|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang ?up|connection (reset|aborted|closed)|TLS|SSL|undici|request aborted|terminated|timed? ?out|AbortError/i;
+export function isNetworkErrorMessage(msg: string): boolean {
+  return NETWORK_ERROR_RE.test(msg || '');
+}
+
 export async function handleOrchestratedChat(
   req: { 
     messages: any[]; 
@@ -2360,6 +2371,19 @@ export async function handleOrchestratedChat(
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
+
+  // SSE keepalive: the agent loop's first big model call can go ~60-90s
+  // without emitting an event (time-to-first-token), and proxies kill a
+  // silent stream — the client then sees a bare "network error" and the turn
+  // dies (live bug 2026-11-27: build stopped at 1m20s). A comment line every
+  // 15s keeps the stream alive; the frontend's parser ignores non-data
+  // lines. Cleared when the response finishes or the client disconnects.
+  const heartbeat = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch { /* client gone — 'close' clears below */ }
+  }, 15000);
+  heartbeat.unref?.();
+  res.on('finish', () => clearInterval(heartbeat));
+  res.on('close', () => clearInterval(heartbeat));
 
   const sendEvent = (data: any) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -2679,19 +2703,29 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
   }
 
   const excludedKeyIds = new Set<string>();
-  const maxAttempts = activePool.length;
+  // Two full passes over the pool, not one: after every key has been tried
+  // once, selectBestKey returns null and the loop reaches the "no key left"
+  // branch, where the per-minute rollover retry and the network retry live.
+  // With maxAttempts === pool length the loop exited exactly when the pool
+  // was exhausted, so those retries were unreachable dead code (a network
+  // blip on the last key ended the turn with no second chance). The retry
+  // passes each fire at most once and reset attempts, so the loop still
+  // terminates; mixed failures break out at the first "no key left".
+  const maxAttempts = activePool.length * 2;
   let attempts = 0;
   let succeeded = false;
   let sawDailyFreeLimit = false;
   let sawRateLimit = false;
   let sawProviderOverload = false;
   let sawAuthError = false;
+  let sawNetworkError = false;
   // Per-minute-limit tracking for the all-keys-RPM wait-and-retry: RPM/TPM
   // budgets roll over every minute, so if every key failed only on RPM/TPM
   // (never daily, never auth), the turn waits once and retries the pool.
   let sawRpmLimit = false;
   let lastRetryAfterSec = 60;
   let didMinuteRolloverRetry = false;
+  let didNetworkRetry = false;
   let lastFailureMessage = '';
   const failedGeminiModels = new Set<string>();
 
@@ -2892,16 +2926,32 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
               // and the next key got an empty chain (silent empty reply).
               // Only 404/503 (model unavailable) blacklists the model.
               const isAuth = mErr?.status === 401 || /401|API key not valid|UNAUTHENTICATED|ACCESS_TOKEN_TYPE_UNSUPPORTED|User not found/i.test(mMsg);
+              // Network/transport errors are RETRYABLE like 503/404: the
+              // model is fine, the connection broke — try the next model on
+              // this key (fresh connection), then the outer loop rotates to
+              // the next key. The old code threw here, short-circuiting the
+              // whole model chain on the first network blip.
+              const isNetwork = isNetworkErrorMessage(mMsg);
               const isModelRetryable =
                 mErr?.status === 503 ||
                 mErr?.status === 404 ||
+                isNetwork ||
                 /503|404|high demand|UNAVAILABLE|not found|not supported/i.test(mMsg);
               if (isAuth || !isModelRetryable) throw geminiChainErr;
-              failedGeminiModels.add(candidateModel);
-              sendEvent({
-                type: "action",
-                action: `⚡ ${candidateModel} unavailable, switching to backup Gemini model...`
-              });
+              if (isNetwork) {
+                // The model itself is fine — do NOT blacklist it for the
+                // turn (the next key gets the full chain again).
+                sendEvent({
+                  type: "action",
+                  action: `⚠️ নেটওয়ার্ক সমস্যায় ${candidateModel} সাড়া দেয়নি — পরের Gemini মডেল দিয়ে আবার চেষ্টা করা হচ্ছে...`
+                });
+              } else {
+                failedGeminiModels.add(candidateModel);
+                sendEvent({
+                  type: "action",
+                  action: `⚡ ${candidateModel} unavailable, switching to backup Gemini model...`
+                });
+              }
             }
           }
 
@@ -3066,6 +3116,7 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
         const is404Model = err.status === 404 || /not found|not supported for generateContent/i.test(errMsg);
         const isQuotaExceeded = is429 || /quota exceeded|resource_exhausted/i.test(errMsg);
         const isAuthError = err.status === 401 || err.code === 401 || /401|API key not valid|UNAUTHENTICATED|User not found|ACCESS_TOKEN_TYPE_UNSUPPORTED/i.test(errMsg);
+        const isNetworkError = isNetworkErrorMessage(errMsg);
 
         // Which budget did this 429 hit? RPM/TPM = per-minute (seconds-long,
         // rolling reset); RPD = daily (until midnight Pacific). Parsed from
@@ -3083,6 +3134,7 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
         if (isQuotaExceeded) sawRateLimit = true;
         if (is503) sawProviderOverload = true;
         if (isAuthError) sawAuthError = true;
+        if (isNetworkError) sawNetworkError = true;
 
         if (isAuthError) {
           addSystemLog({
@@ -3149,7 +3201,7 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
           }
           const friendly = kind
             ? limitLabel(kind, kind === 'rpd' ? undefined : cooldownSec)
-            : (is429 ? 'rate limit — retrying shortly' : 'provider error');
+            : (isNetworkError ? 'network error — retrying with the next key' : (is429 ? 'rate limit — retrying shortly' : 'provider error'));
           addSystemLog({
             level: 'warn',
             category: isQuotaExceeded ? 'rate_limit' : 'execution',
@@ -3195,6 +3247,31 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
         excludedKeyIds.clear();
         attempts = 0;
         sawRpmLimit = false;
+        continue;
+      }
+      // Every failure this turn was a NETWORK error (never quota, never
+      // auth): the connection blipped, not the keys. Wait briefly and retry
+      // the pool once with fresh connections — same pattern as the per-minute
+      // rollover retry above — instead of failing the turn outright.
+      if (!succeeded && sawNetworkError && !sawDailyFreeLimit && !sawAuthError && !sawRateLimit && !sawProviderOverload && !didNetworkRetry) {
+        didNetworkRetry = true;
+        const waitSec = 5;
+        addSystemLog({
+          level: 'info',
+          category: 'execution',
+          message: `🌐 সব চেষ্টা নেটওয়ার্ক সমস্যায় ব্যর্থ — ${waitSec}s অপেক্ষা করে পুল আবার চেষ্টা করা হচ্ছে...`
+        });
+        sendEvent({ type: 'action', action: `🌐 নেটওয়ার্ক সমস্যা — ${waitSec}s অপেক্ষা করে আবার চেষ্টা করা হচ্ছে...` });
+        await new Promise(r => setTimeout(r, waitSec * 1000));
+        // Clear only the cooldowns this turn's network errors set, so the
+        // retry re-tries exactly the keys that failed on the network.
+        for (const k of activePool) {
+          const st = getOrCreateStats(k.id);
+          if (st.lastError && isNetworkErrorMessage(st.lastError)) st.cooldownUntil = 0;
+        }
+        excludedKeyIds.clear();
+        attempts = 0;
+        sawNetworkError = false;
         continue;
       }
       addSystemLog({
@@ -3307,7 +3384,16 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
     // No provider keys at all (the router had nothing to call): say so in
     // Bengali and point at the Keys tab — never wrap the raw rotation error
     // ("No openrouter key is configured; trying ...") in the reply.
-    if (/কোনো API key বসানো হয়নি|NO_PROVIDER_KEYS/i.test(lastFailureMessage) || /No .* key is configured/i.test(lastFailureMessage)) {
+    // FIX (2026-11-27): the old check also matched /No .* key is
+    // configured/ — but that text comes from a ROUTER sub-call (the embedded
+    // router, or the planner's chatOnce) when ONE provider has no key, while
+    // this turn's pool may hold keys for other providers. Matching it here
+    // reported "no key at all" when keys existed (repro: a pool holding only
+    // a custom key ended with the no-key message). The genuine keyless case
+    // never reaches this block: it is handled by the activePool.length === 0
+    // early return above and by the casual path's NO_PROVIDER_KEYS_CODE
+    // check — so only the exact no-keys message/code counts here.
+    if (/কোনো API key বসানো হয়নি|NO_PROVIDER_KEYS/i.test(lastFailureMessage)) {
       finalUserError = NO_PROVIDER_KEYS_MESSAGE;
       finalIsAuthError = true;
     } else if (sawDailyFreeLimit) {
@@ -3319,6 +3405,8 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
     } else if (sawAuthError) {
       finalUserError = "⚠️ আপনার যুক্ত করা সিক্রেট কীগুলোতে অনুমোদন সমস্যা রয়েছে (401 Unauthorized / Invalid Key)। অনুগ্রহ করে 🔑 মেনু থেকে কীগুলোর স্থিতি চেক করুন।";
       finalIsAuthError = true;
+    } else if (sawNetworkError) {
+      finalUserError = "⚠️ নেটওয়ার্ক সমস্যায় মডেল সাড়া দেয়নি — সব কী ও মডেল ঘুরিয়ে চেষ্টা করা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।";
     } else if (lastFailureMessage) {
       finalUserError = `⚠️ রিকোয়েস্ট সম্পন্ন করা যায়নি: ${lastFailureMessage.slice(0, 180)}`;
     }
