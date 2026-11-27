@@ -3,6 +3,27 @@ import { getLocalKeys, getPreferOnlyCustomKeys, getLastSuccessfulKeyId, setLastS
 
 export type { KeyMetadata };
 
+/**
+ * STEP 3 (P0): cap the history sent to the server to the last N turns.
+ * Must match the server default (HISTORY_WINDOW_TURNS, default 12) — the
+ * server is authoritative and windows again + prepends the rolling summary,
+ * so a drift here only changes payload size, never what the model sees.
+ * Turn-aligned: a turn starts at each user message; model messages attach
+ * to the preceding user turn. The full conversation stays in IndexedDB for
+ * display — only the request payload is trimmed.
+ */
+export const CHAT_SEND_WINDOW_TURNS = 12;
+
+export function trimMessagesToWindow(messages: any[], windowTurns: number = CHAT_SEND_WINDOW_TURNS): any[] {
+  const list = Array.isArray(messages) ? messages : [];
+  const starts: number[] = [];
+  for (let i = 0; i < list.length; i++) {
+    if (list[i]?.role === 'user') starts.push(i);
+  }
+  if (starts.length <= windowTurns) return list;
+  return list.slice(starts[starts.length - windowTurns]);
+}
+
 export interface ChatAIOptions {
   selectedModel?: string;
   developerPersona?: string;
@@ -42,7 +63,9 @@ export async function chatWithAI(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      messages,
+      // STEP 3 (P0): send only the last N turns — the whole conversation
+      // used to go over the wire (and into the model) every turn.
+      messages: trimMessagesToWindow(messages),
       mode,
       sessionId,
       userKeys: localKeys,

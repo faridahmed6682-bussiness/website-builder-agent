@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { CODING_SKILLS_REGISTRY } from './skillsRegistry.ts';
+import { splitHistoryWindow } from './historyWindow.ts';
 
 export interface DeployResult {
   success: boolean;
@@ -606,6 +607,14 @@ export function prepareGeminiHistoryAndLastMessage(messages: any[]): SanitizedGe
       lastMessage: "Hello! Please assist me."
     };
   }
+
+  // STEP 3 (P0): hard cap — keep only the last HISTORY_WINDOW_TURNS turns
+  // (default 12) so input tokens stop growing linearly with session length.
+  // Turn-aligned, so the last turn (which becomes lastMessage) is intact.
+  // The rolling summary of the dropped turns is prepended upstream by the
+  // orchestrator; this cap also covers direct callers with no session.
+  const { dropped: droppedTurns } = splitHistoryWindow(rawCleaned);
+  if (droppedTurns.length > 0) rawCleaned.splice(0, droppedTurns.length);
 
   // 2. The latest turn to send to chat.sendMessageStream must be user text
   const lastTurn = rawCleaned.pop()!;

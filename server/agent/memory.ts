@@ -88,6 +88,12 @@ export interface StoredChat {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  /** Rolling summary of the turns that fell out of the model history window
+   * (Step 3): ~200-300 tokens of condensed context, written by the cheap
+   * model. The full message list is kept — only what the model sees is capped. */
+  summary?: string;
+  /** Number of stored messages (from the start) covered by `summary`. */
+  summaryUpTo?: number;
 }
 
 function safeSessionId(sessionId: string): string {
@@ -137,6 +143,19 @@ export async function saveChatTurn(sessionId: string, userText: string, assistan
   // Cap history at 500 messages (oldest dropped) so the file stays small.
   if (chat.messages.length > 500) chat.messages = chat.messages.slice(-500);
   chat.updatedAt = now;
+  await fs.writeFile(chatPath(sessionId), JSON.stringify(chat, null, 2), 'utf-8').catch(() => {});
+}
+
+/** Persist a refreshed rolling summary (Step 3). `upTo` counts the stored
+ * messages, from the start, that the summary covers. saveChatTurn spreads
+ * the existing chat object, so the summary survives later turns. */
+export async function updateChatSummary(sessionId: string, summary: string, upTo: number): Promise<void> {
+  if (!sessionId) return;
+  const chat = await loadChat(sessionId);
+  if (!chat) return;
+  chat.summary = summary;
+  chat.summaryUpTo = upTo;
+  chat.updatedAt = Date.now();
   await fs.writeFile(chatPath(sessionId), JSON.stringify(chat, null, 2), 'utf-8').catch(() => {});
 }
 

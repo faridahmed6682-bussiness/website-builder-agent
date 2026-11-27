@@ -10,6 +10,7 @@ import { getRouterApiKey, NO_PROVIDER_KEYS_MESSAGE, NO_PROVIDER_KEYS_CODE } from
 import { decideIntent, CASUAL_SYSTEM } from "./intentGate.ts";
 import { matchDirectCommand, getCachedToolResult, setCachedToolResult } from "./directTools.ts";
 import { readUserMemory, saveChatTurn, loadChat, listProjects, listChats } from "./memory.ts";
+import { splitHistoryWindow, ensureRollingSummary, summaryTurn } from "./historyWindow.ts";
 import { readLessons, recordLesson } from "./lessons.ts";
 import { newTurnUsage, addLlmStep, addToolCall, usageTotals, recordTurnUsage, costTierOfModel, estimateTokens, sessionUsageSummary, type TurnUsage } from "./usage.ts";
 import { describeImage } from "./vision.ts";
@@ -1469,7 +1470,7 @@ function toOpenAITools(declarations: FunctionDeclaration[]): any[] {
 }
 
 // Convert messages to standard OpenAI format for OpenRouter, Groq, Cerebras, Mistral, Grok, Custom
-function convertToOpenAIMessages(
+export function convertToOpenAIMessages(
   messages: any[],
   mode: string,
   systemOptions: SystemInstructionOptions = {},
@@ -1492,6 +1493,12 @@ function convertToOpenAIMessages(
       });
     }
   }
+  // STEP 3 (P0): hard cap — system prompt + the last HISTORY_WINDOW_TURNS
+  // turns (default 12), so input tokens stop growing linearly with session
+  // length. The handler windows the list first and prepends the rolling
+  // summary; this cap also covers any other caller.
+  const { dropped } = splitHistoryWindow(formatted.slice(1));
+  if (dropped.length > 0) formatted.splice(1, dropped.length);
   return formatted;
 }
 
@@ -2465,8 +2472,21 @@ export async function handleOrchestratedChat(
     } catch { /* stored history unavailable — continue with client history */ }
   }
 
+  // STEP 3 (P0): cap the history the model sees to the last
+  // HISTORY_WINDOW_TURNS turns (default 12) — the client sends the whole
+  // conversation every turn and the stored session is only capped at 500
+  // messages, so without this input tokens grew LINEARLY with session
+  // length on every round. `recentMessages` feeds BOTH loops below (the
+  // Gemini loop via `history`, the OpenAI-compatible loop via
+  // `messagesForModel`); the sanitizer / converter hard-cap again as a
+  // second line of defence. The rolling summary of the dropped turns is
+  // prepended after the intent gate (only turns that reach a model loop
+  // pay for a summary call — casual turns send no history at all).
+  const { recent: recentMessages, dropped: droppedMessages } = splitHistoryWindow(messagesForHistory);
+  let messagesForModel: any[] = recentMessages;
+
   // Extract and sanitize messages once
-  const { history, lastMessage: initialLastMessage } = prepareGeminiHistoryAndLastMessage(messagesForHistory);
+  let { history, lastMessage: initialLastMessage } = prepareGeminiHistoryAndLastMessage(messagesForModel);
   let lastMessage = initialLastMessage;
 
   // Vision: an uploaded image is described first (free Gemini, planning
@@ -2585,6 +2605,22 @@ export async function handleOrchestratedChat(
   }
   const allowTools = !isConversationalPrompt;
   systemOptions.conversational = isConversationalPrompt;
+
+  // STEP 3 (P0, continued): this turn reaches a model loop, so refresh the
+  // rolling summary from the server-stored history (one cheap-model call,
+  // ~200-300 tokens) and prepend it when older turns exist beyond the
+  // window — either dropped from this turn's history or known to the server
+  // (the client now sends only the last N turns, so the server may hold
+  // turns the client no longer sends). Only `history` is rebuilt here:
+  // prepending cannot change the last turn, and `lastMessage` may already
+  // carry the vision brief appended above — it must survive untouched.
+  if (sessionId) {
+    const rolling = await ensureRollingSummary(sessionId);
+    if (rolling.summary && (droppedMessages.length > 0 || rolling.coversBeyondWindow)) {
+      messagesForModel = [summaryTurn(rolling.summary), ...recentMessages];
+      history = prepareGeminiHistoryAndLastMessage(messagesForModel).history;
+    }
+  }
 
   // Skill trigger matching (deterministic, from the registry `triggers` field):
   // if the user's request matches any of the registered skills, preload
@@ -3098,7 +3134,7 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
             key.apiKey,
             targetModel,
             extraHeaders,
-            messages,
+            messagesForModel, // STEP 3: windowed history (+ rolling summary), not the raw full history
             mode,
             sendEvent,
             systemOptions,
