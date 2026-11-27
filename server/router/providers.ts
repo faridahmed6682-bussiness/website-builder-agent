@@ -66,6 +66,11 @@ export async function callProvider(
     messages: req.messages,
     stream: Boolean(req.stream),
   };
+  // STEP 15 (b): ask for usage on streams — Gemini, Groq and OpenRouter
+  // all honour stream_options.include_usage on their OpenAI-compatible
+  // endpoints (Gemini: final chunk carries the usage object). Without this
+  // the router can only record (0, 0) for every streamed reply.
+  if (req.stream) body.stream_options = { include_usage: true };
   if (req.max_tokens) body.max_tokens = req.max_tokens;
   const effort = mapReasoningEffort(req.reasoning_effort);
   if (effort) body.reasoning_effort = effort;
