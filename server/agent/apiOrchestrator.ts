@@ -12,7 +12,8 @@ import { matchDirectCommand, getCachedToolResult, setCachedToolResult } from "./
 import { readUserMemory, saveChatTurn, loadChat, listProjects, listChats } from "./memory.ts";
 import { splitHistoryWindow, ensureRollingSummary, summaryTurn } from "./historyWindow.ts";
 import { readLessons, recordLesson } from "./lessons.ts";
-import { newTurnUsage, addLlmStep, addToolCall, usageTotals, recordTurnUsage, costTierOfModel, estimateTokens, sessionUsageSummary, type TurnUsage } from "./usage.ts";
+import { newTurnUsage, addLlmStep, addToolCall, usageTotals, recordTurnUsage, costTierOfModel, estimateTokens, toolsSchemaTokensEstimate, sessionUsageSummary, type TurnUsage } from "./usage.ts";
+import { parseSseUsageChunk } from "../router/index.ts";
 import { describeImage } from "./vision.ts";
 import { CODING_SKILLS_REGISTRY } from "./skillsRegistry.ts";
 import {
@@ -1435,6 +1436,59 @@ const PLAN_TOOLS = new Set(['omo_coordinate', 'ask_question', 'plan', 'read_skil
 const TOOL_RESULT_MAX_CHARS = Number(process.env.TOOL_RESULT_MAX_CHARS || 3000);
 // Max repair rounds shared by the verify-then-fix loop and the reviewer pass.
 const MAX_REPAIR_ROUNDS = 2;
+// STEP 15 (d): reference-website scrape cap — 6,000 chars of Jina Reader
+// markdown (~1,200 tokens at ~5 chars/token for markdown, ~1,500 at the
+// 1-token-per-4-chars estimate; was 14,000 chars / ~2,750 tokens). Jina
+// markdown is front-loaded — navbar, hero, sections, pricing/feature cards
+// and footer all sit near the top — so the cap keeps the design signal
+// while roughly halving the context cost of a URL turn.
+export const REFERENCE_SCRAPE_MAX_CHARS = 6000;
+
+// STEP 15 (a): turn checkpoint — partial progress preserved across an
+// outer key rotation, so a late 429 resumes the turn instead of restarting
+// it from scratch (re-paying the whole accumulated context and re-running
+// every tool call). One checkpoint is created per turn in
+// handleOrchestratedChat and passed into whichever loop serves the
+// attempt; the loops mutate it in place as rounds complete, so a throw
+// mid-turn leaves the progress behind for the next key to pick up.
+// Files already written stay on disk; what the checkpoint adds is the
+// conversation state (OpenAI messages incl. tool results) and the text /
+// file list the next attempt must not redo. roundsCompleted caps TOTAL
+// rounds across rotations at 16 — a resumed turn does not get a fresh 16.
+export interface TurnCheckpoint {
+  /** Total loop rounds already completed this turn, across all keys. */
+  roundsCompleted: number;
+  /** OpenAI-compatible loop: the accumulated messages (system + turns +
+   * tool results). Shared by reference — the loop pushes onto this array. */
+  openAiMessages: any[] | null;
+  /** Text the model has already produced this turn (both loops). */
+  committedText: string;
+  /** Files already written this turn (both loops). */
+  mutatedFiles: string[];
+  didMutateFiles: boolean;
+  calledAnyTool: boolean;
+  /** Gemini loop: the next payload to send (tool-response array), plus a
+   * truncated text form of the last tool results for the resume brief.
+   * geminiHasProgress is true only once a tool round actually ran — a
+   * first-round failure must resume as a fresh start, not a resume brief. */
+  geminiNextPayload: any;
+  geminiLastToolResults: string;
+  geminiHasProgress: boolean;
+}
+
+export function newTurnCheckpoint(): TurnCheckpoint {
+  return {
+    roundsCompleted: 0,
+    openAiMessages: null,
+    committedText: '',
+    mutatedFiles: [],
+    didMutateFiles: false,
+    calledAnyTool: false,
+    geminiNextPayload: null,
+    geminiLastToolResults: '',
+    geminiHasProgress: false,
+  };
+}
 // FreeLLMAPI auto strategies to rotate through when the router errors.
 const FREELLMAPI_AUTO_STRATEGIES = ['auto:balanced', 'auto:fast', 'auto:reliable', 'auto:smart', 'auto:cheap'];
 
@@ -1540,7 +1594,10 @@ async function runReviewerPass(
 }
 
 // Stream chat with OpenAI-compatible endpoints (OpenRouter, Groq, Cerebras, Mistral, Grok, Custom) WITH full tool-calling + text-tool fallback loop
-async function streamOpenAICompatible(
+// Exported for the keyless proof (scripts/step15-proof.mts), like
+// runGeminiAgentLoop above — the proof drives the loop with a stubbed
+// fetch and records the tools offered per round.
+export async function streamOpenAICompatible(
   endpoint: string,
   apiKey: string,
   model: string,
@@ -1555,15 +1612,34 @@ async function streamOpenAICompatible(
   trackedKey?: KeyConfig,
   allowTools: boolean = true,
   planningEffort?: PlanningEffort,
-  usageLedger?: TurnUsage
+  usageLedger?: TurnUsage,
+  checkpoint?: TurnCheckpoint
 ): Promise<string> {
-  const openAiMessages: any[] = convertToOpenAIMessages(messages, mode, systemOptions, enrichedLastMessage);
+  // STEP 15 (a): resume from the checkpoint when a previous key already
+  // ran rounds this turn — reuse the SAME messages array (shared by
+  // reference, so pushes below persist into the checkpoint) instead of
+  // rebuilding from `messages` and re-running every tool call.
+  const openAiMessages: any[] = checkpoint?.openAiMessages?.length
+    ? checkpoint.openAiMessages
+    : convertToOpenAIMessages(messages, mode, systemOptions, enrichedLastMessage);
+  if (checkpoint && !checkpoint.openAiMessages) checkpoint.openAiMessages = openAiMessages;
   const openAiTools = allowTools ? toOpenAITools(serverTools) : [];
   let targetModel = model;
   let toolsEnabled = allowTools;
-  let committedText = '';
-  let didMutateFiles = false;
-  let calledAnyTool = false;
+  let committedText = checkpoint?.committedText ?? '';
+  let didMutateFiles = checkpoint?.didMutateFiles ?? false;
+  let calledAnyTool = checkpoint?.calledAnyTool ?? false;
+  const mutatedFiles = new Set<string>(checkpoint?.mutatedFiles ?? []);
+  // STEP 15 (b): the tool-schema cost, counted once per round below (only
+  // on the estimate path — provider-reported usage already includes it).
+  const toolsSchemaTokens = toolsSchemaTokensEstimate(JSON.stringify(openAiTools).length);
+  const syncCheckpoint = (): void => {
+    if (!checkpoint) return;
+    checkpoint.committedText = committedText;
+    checkpoint.didMutateFiles = didMutateFiles;
+    checkpoint.calledAnyTool = calledAnyTool;
+    checkpoint.mutatedFiles = [...mutatedFiles];
+  };
   let continuationNudges = 0;
   const requiresImplementation = isActionOrBuildPrompt(rawUserPrompt);
 
@@ -1580,7 +1656,8 @@ async function streamOpenAICompatible(
   // 3 times, escalates the turn to Hydrogen (Tier 2) once.
   let consecutiveToolFailures = 0;
   const toolCallCounts = new Map<string, number>();
-  const mutatedFiles = new Set<string>();
+  // (mutatedFiles is declared above, from the checkpoint — shared so a
+  // resumed turn keeps the written-files list.)
   let escalatedToHydrogen = false;
 
   /** Compact handoff brief (~200-300 tokens): what was done, key files, tool
@@ -1657,10 +1734,20 @@ async function streamOpenAICompatible(
   let repairRounds = 0;
   let lastVerificationBrief = '';
 
-  const maxRounds = allowTools ? 16 : 1;
+  // STEP 15 (a): total rounds across key rotations are capped at 16 — a
+  // resumed turn continues its round budget, it does not get a fresh 16.
+  const maxRounds = allowTools ? Math.max(1, 16 - (checkpoint?.roundsCompleted ?? 0)) : 1;
   for (let round = 0; round < maxRounds; round++) {
+    if (checkpoint) checkpoint.roundsCompleted++;
     await paceAndTrackKeyRound(trackedKey, round, sendEvent);
     noteModelAttempt(targetModel, trackedKey?.id);
+    // STEP 15 (c): the final round is the summary round — like the Gemini
+    // loop since step 4, it sends NO tools (the full schema is ~8,700–
+    // 10,400 tokens). Any tool call made here would be executed blind:
+    // the loop exits right after, so its result is discarded. All
+    // refetches inside this round use the same flag.
+    const isFinalRound = toolsEnabled && round === maxRounds - 1;
+    const sendToolsThisRound = toolsEnabled && !isFinalRound;
     const buildPayload = (useModel: string, useTools: boolean) => {
       const payload: any = {
         model: useModel,
@@ -1685,7 +1772,7 @@ async function streamOpenAICompatible(
         'Content-Type': 'application/json',
         ...headers
       },
-      body: buildPayload(targetModel, toolsEnabled)
+      body: buildPayload(targetModel, sendToolsThisRound)
     });
 
     if (!res.ok) {
@@ -1743,7 +1830,7 @@ The server will execute it immediately and send back the result so you can conti
             'Content-Type': 'application/json',
             ...headers
           },
-          body: buildPayload(targetModel, toolsEnabled)
+          body: buildPayload(targetModel, sendToolsThisRound)
         });
       } else if (
         endpoint.includes('openrouter.ai') &&
@@ -1764,7 +1851,7 @@ The server will execute it immediately and send back the result so you can conti
               'Content-Type': 'application/json',
               ...headers
             },
-            body: buildPayload(targetModel, toolsEnabled)
+            body: buildPayload(targetModel, sendToolsThisRound)
           });
         }
       } else if (
@@ -1785,7 +1872,7 @@ The server will execute it immediately and send back the result so you can conti
               'Content-Type': 'application/json',
               ...headers
             },
-            body: buildPayload(targetModel, toolsEnabled)
+            body: buildPayload(targetModel, sendToolsThisRound)
           });
         } else {
           const strategies = FREELLMAPI_AUTO_STRATEGIES.filter(m => m !== targetModel);
@@ -1798,7 +1885,7 @@ The server will execute it immediately and send back the result so you can conti
                 'Content-Type': 'application/json',
                 ...headers
               },
-              body: buildPayload(targetModel, toolsEnabled)
+              body: buildPayload(targetModel, sendToolsThisRound)
             });
           }
         }
@@ -1819,6 +1906,9 @@ The server will execute it immediately and send back the result so you can conti
     const decoder = new TextDecoder();
     let buffer = '';
     let roundText = '';
+    // STEP 15 (b): provider-reported usage for this round, when the final
+    // SSE chunk carries it (see parseSseUsageChunk). Null = estimate path.
+    let streamUsage: { promptTokens: number; completionTokens: number } | null = null;
     let streamError: { message: string; status: number } | null = null;
     const toolCallsMap = new Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>();
 
@@ -1849,6 +1939,12 @@ The server will execute it immediately and send back the result so you can conti
             };
             break;
           }
+
+          // STEP 15 (b): capture the usage chunk BEFORE the delta check —
+          // the final usage chunk often carries no delta, so checking the
+          // delta first would drop it.
+          const sseUsage = parseSseUsageChunk(json);
+          if (sseUsage) streamUsage = sseUsage;
 
           const choiceDelta = json.choices?.[0]?.delta;
           if (!choiceDelta) continue;
@@ -1978,6 +2074,7 @@ The server will execute it immediately and send back the result so you can conti
           content: truncateToolOutput(toolResult),
         });
       }
+      syncCheckpoint(); // STEP 15 (a): tool results persist for the next key
       continue;
     }
 
@@ -2007,14 +2104,25 @@ The server will execute it immediately and send back the result so you can conti
         role: 'user',
         content: `[TOOL EXECUTION RESULTS]:\n${JSON.stringify(resultSummaries)}\n\nContinue immediately: implement all requested features directly in workspace files using write_to_file or replace_file_content (never output tool_calls JSON or full code in chat), then verify and summarize.`,
       });
+      syncCheckpoint(); // STEP 15 (a): tool results persist for the next key
       continue;
     }
 
-    // Usage ledger: one step per model round (estimates — the streaming
-    // path does not return provider usage; labelled as estimates in the UI).
+    // Usage ledger: one step per model round. STEP 15 (b): use the
+    // provider-reported usage when the stream carried it (estimated: false);
+    // otherwise estimate — and count the tool-schema cost on the estimate
+    // path via toolsSchemaTokensEstimate (the schema is sent as input
+    // tokens on every round that offers tools; provider-reported usage
+    // already includes it, so it is never added twice).
     if (roundText && usageLedger) {
-      addLlmStep(usageLedger, { kind: 'llm', model: targetModel, provider: trackedKey?.provider, keyName: trackedKey?.name, tier: costTierOfModel(targetModel), promptTokens: estimateTokens(JSON.stringify(openAiMessages).slice(-20000)), completionTokens: estimateTokens(roundText), estimated: true });
+      const toolsSentThisRound = sendToolsThisRound;
+      if (streamUsage) {
+        addLlmStep(usageLedger, { kind: 'llm', model: targetModel, provider: trackedKey?.provider, keyName: trackedKey?.name, tier: costTierOfModel(targetModel), promptTokens: streamUsage.promptTokens, completionTokens: streamUsage.completionTokens, estimated: false, note: 'provider-reported stream usage' });
+      } else {
+        addLlmStep(usageLedger, { kind: 'llm', model: targetModel, provider: trackedKey?.provider, keyName: trackedKey?.name, tier: costTierOfModel(targetModel), promptTokens: estimateTokens(JSON.stringify(openAiMessages).slice(-20000)) + (toolsSentThisRound ? toolsSchemaTokens : 0), completionTokens: estimateTokens(roundText), estimated: true, note: toolsSentThisRound ? `estimate, incl. ~${toolsSchemaTokens} tool-schema tokens` : 'estimate (no usage reported by provider)' });
+      }
     }
+    syncCheckpoint();
     // Multi-agent team status (sequential: Planner -> Coder -> Reviewer ->
     // Tester). Planner works until the plan-first gate passes, then Coder.
     if (teamEnabled && planCompleted && !teamPlannerDone) {
@@ -2139,7 +2247,8 @@ export async function runGeminiAgentLoop(
   execCtx: ToolExecutionContext,
   trackedKey?: KeyConfig,
   allowTools: boolean = true,
-  usageLedger?: TurnUsage
+  usageLedger?: TurnUsage,
+  checkpoint?: TurnCheckpoint
 ): Promise<string> {
   // Hoisted so the last-round tool-free request (below) carries the exact
   // same system instruction the chat was created with — a per-request
@@ -2156,15 +2265,41 @@ export async function runGeminiAgentLoop(
     history
   });
 
+  // STEP 15 (a): resume from the checkpoint when a previous key already
+  // ran rounds this turn. A fresh chat cannot replay the previous
+  // attempt's function calls, so the resume is a compact brief, not the
+  // raw functionResponse array: what was written, what text exists, and
+  // the last tool results — the next key continues from there instead of
+  // re-doing the work. Files already written stay on disk either way.
+  const mutatedFiles = new Set<string>(checkpoint?.mutatedFiles ?? []);
   let nextPayload: any = lastMessage;
-  let committedText = '';
-  let didMutateFiles = false;
-  let calledAnyTool = false;
+  let committedText = checkpoint?.committedText ?? '';
+  let didMutateFiles = checkpoint?.didMutateFiles ?? false;
+  let calledAnyTool = checkpoint?.calledAnyTool ?? false;
+  let geminiHasProgress = checkpoint?.geminiHasProgress ?? false;
+  if (checkpoint && (geminiHasProgress || checkpoint.committedText)) {
+    const files = [...mutatedFiles].join(', ') || 'none';
+    nextPayload = `[RESUMED AFTER KEY ROTATION — the previous key hit its limit mid-turn. Progress is preserved; do NOT redo completed work. Text produced so far: ${committedText || '(none)'}. Files already written: ${files}. Last tool results: ${checkpoint.geminiLastToolResults || 'none'}. Continue from here.]`;
+  }
+  // STEP 15 (b): provider-reported usage from the stream chunks'
+  // usageMetadata (last non-null wins — it is a turn total, never summed).
+  let geminiUsage: { promptTokens: number; completionTokens: number } | null = null;
+  const syncCheckpoint = (): void => {
+    if (!checkpoint) return;
+    checkpoint.committedText = committedText;
+    checkpoint.didMutateFiles = didMutateFiles;
+    checkpoint.calledAnyTool = calledAnyTool;
+    checkpoint.mutatedFiles = [...mutatedFiles];
+    checkpoint.geminiNextPayload = nextPayload;
+    checkpoint.geminiHasProgress = geminiHasProgress;
+  };
   let continuationNudges = 0;
   const requiresImplementation = isActionOrBuildPrompt(rawUserPrompt);
-  const maxRounds = allowTools ? 16 : 1;
+  // STEP 15 (a): total rounds across key rotations are capped at 16.
+  const maxRounds = allowTools ? Math.max(1, 16 - (checkpoint?.roundsCompleted ?? 0)) : 1;
 
   for (let round = 0; round < maxRounds; round++) {
+    if (checkpoint) checkpoint.roundsCompleted++;
     await paceAndTrackKeyRound(trackedKey, round, sendEvent);
     // STEP 4 (P0): the final round is the summary round — the model only
     // writes its closing text, and any tool call it made here would be
@@ -2182,6 +2317,12 @@ export async function runGeminiAgentLoop(
     const functionCalls: any[] = [];
 
     for await (const chunk of currentResult) {
+      // STEP 15 (b): capture provider-reported usage when the SDK reports
+      // it (usageMetadata on the final chunk). Last non-null wins.
+      const usageMeta: any = (chunk as any)?.usageMetadata;
+      if (usageMeta && typeof usageMeta.promptTokenCount === 'number') {
+        geminiUsage = { promptTokens: usageMeta.promptTokenCount, completionTokens: typeof usageMeta.candidatesTokenCount === 'number' ? usageMeta.candidatesTokenCount : 0 };
+      }
       if (chunk.text) {
         roundText += chunk.text;
         const previewText = (committedText ? committedText + '\n\n' : '') + getSafeStreamableText(roundText);
@@ -2199,6 +2340,7 @@ export async function runGeminiAgentLoop(
       committedText = committedText ? `${committedText}\n\n${cleanRoundText}` : cleanRoundText;
     }
     sendEvent({ type: 'text', text: committedText });
+    syncCheckpoint(); // STEP 15 (a): text produced so far persists
 
     if (functionCalls.length > 0) {
       calledAnyTool = true;
@@ -2207,6 +2349,8 @@ export async function runGeminiAgentLoop(
           if (!call.name) return null;
           if (FILE_WRITE_TOOL_NAMES.has(call.name)) didMutateFiles = true;
           const toolResult = await executeToolWithLiveEvents(call.name, call.args, sendEvent, execCtx);
+          const fp = (toolResult as any)?.cleanPath || call.args?.TargetFile || call.args?.filePath || call.args?.path || '';
+          if (fp) mutatedFiles.add(String(fp));
           return {
             functionResponse: {
               name: call.name,
@@ -2218,6 +2362,9 @@ export async function runGeminiAgentLoop(
       const validResponses = toolResponses.filter(Boolean);
       if (validResponses.length === 0) break;
       nextPayload = validResponses;
+      geminiHasProgress = true;
+      if (checkpoint) checkpoint.geminiLastToolResults = JSON.stringify(validResponses).slice(0, 1000);
+      syncCheckpoint(); // STEP 15 (a): progress persists for the next key
       continue;
     }
 
@@ -2227,9 +2374,14 @@ export async function runGeminiAgentLoop(
       for (const tc of textParsedCalls) {
         if (FILE_WRITE_TOOL_NAMES.has(tc.name)) didMutateFiles = true;
         const toolResult = await executeToolWithLiveEvents(tc.name, tc.args, sendEvent, execCtx);
+        const fp = (toolResult as any)?.cleanPath || tc.args?.TargetFile || tc.args?.filePath || tc.args?.path || '';
+        if (fp) mutatedFiles.add(String(fp));
         results.push({ tool: tc.name, result: truncateToolOutput(toolResult) });
       }
       nextPayload = `[TOOL EXECUTION RESULTS]:\n${JSON.stringify(results)}\n\nContinue immediately using real function calls (write_to_file / replace_file_content) to write all requested code into workspace files. Do NOT output tool_calls JSON in chat.`;
+      geminiHasProgress = true;
+      if (checkpoint) checkpoint.geminiLastToolResults = JSON.stringify(results).slice(0, 1000);
+      syncCheckpoint(); // STEP 15 (a): progress persists for the next key
       continue;
     }
 
@@ -2247,9 +2399,18 @@ export async function runGeminiAgentLoop(
     break;
   }
 
-  // Usage ledger (aggregate for the direct-Gemini loop — estimates).
+  // Usage ledger (aggregate for the direct-Gemini loop). STEP 15 (b):
+  // provider-reported usage when the stream carried usageMetadata
+  // (estimated: false); otherwise an estimate that COUNTS the tool-schema
+  // cost via toolsSchemaTokensEstimate (the 81 core declarations are sent
+  // as input tokens on every round that offers tools).
   if (usageLedger && committedText) {
-    addLlmStep(usageLedger, { kind: 'llm', model: targetModel, tier: costTierOfModel(targetModel), promptTokens: estimateTokens(JSON.stringify(history).slice(-20000) + lastMessage), completionTokens: estimateTokens(committedText), estimated: true, note: 'direct Gemini loop (aggregate)' });
+    const schemaTokens = toolsSchemaTokensEstimate(JSON.stringify(filterCoreTools(serverTools)).length);
+    if (geminiUsage) {
+      addLlmStep(usageLedger, { kind: 'llm', model: targetModel, tier: costTierOfModel(targetModel), promptTokens: geminiUsage.promptTokens, completionTokens: geminiUsage.completionTokens, estimated: false, note: 'direct Gemini loop (aggregate, provider-reported)' });
+    } else {
+      addLlmStep(usageLedger, { kind: 'llm', model: targetModel, tier: costTierOfModel(targetModel), promptTokens: estimateTokens(JSON.stringify(history).slice(-20000) + lastMessage) + (allowTools ? schemaTokens : 0), completionTokens: estimateTokens(committedText), estimated: true, note: `direct Gemini loop (aggregate estimate, incl. ~${schemaTokens} tool-schema tokens)` });
+    }
   }
   // FIX (2026-11-27): see the same guard in streamOpenAICompatible — an
   // empty reply is a failure, not a success. Throw so the outer loop
@@ -2650,7 +2811,7 @@ When modifying or adding features to the current session app, FIRST inspect the 
           });
           lastMessage += `\n\n[REFERENCE WEBSITE CONTENT - SCRAPED FROM ${rawTargetUrl}]:
 ---
-${pageMarkdown.slice(0, 14000)}
+${pageMarkdown.slice(0, REFERENCE_SCRAPE_MAX_CHARS)}
 ---
 BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
 1. The user wants a website LIKE ${rawTargetUrl} — similar layout, sections and style, with FRESH, original content written by you.
@@ -2723,6 +2884,11 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
   // terminates; mixed failures break out at the first "no key left".
   const maxAttempts = activePool.length * 2;
   let attempts = 0;
+  // STEP 15 (a): one checkpoint for the whole turn — every key attempt
+  // resumes from it, so a late 429 does not restart the turn from scratch.
+  // It also survives the per-minute-rollover and network retries below
+  // (they reset `attempts`, not the checkpoint).
+  const turnCheckpoint = newTurnCheckpoint();
   let succeeded = false;
   let sawDailyFreeLimit = false;
   let sawRateLimit = false;
@@ -2881,7 +3047,8 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
                 execCtx,
                 key,
                 allowTools,
-                usageLedger
+                usageLedger,
+                turnCheckpoint
               );
               geminiChainErr = null;
               break;
@@ -2916,7 +3083,8 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
                     vExecCtx,
                     key,
                     allowTools,
-                    usageLedger
+                    usageLedger,
+                    turnCheckpoint
                   );
                   geminiChainErr = null;
                   break;
@@ -3101,7 +3269,8 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
             key,
             allowTools,
             turnEffort,
-            usageLedger
+            usageLedger,
+            turnCheckpoint
           );
 
           recordKeySuccess(key.id);
@@ -3381,7 +3550,8 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
           fbExecCtx,
           undefined,
           allowTools,
-          usageLedger
+          usageLedger,
+          turnCheckpoint
         );
 
         succeeded = true;

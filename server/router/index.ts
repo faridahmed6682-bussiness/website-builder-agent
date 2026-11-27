@@ -105,6 +105,104 @@ function recordUsage(model: string, promptTokens: number, completionTokens: numb
   saveUsageSoon();
 }
 
+// STEP 15 (b): real token counts on the streaming path. Streaming SSE
+// chunks carry the provider's usage in the final chunk — OpenAI shape
+// (`usage: { prompt_tokens, completion_tokens }`, sent when
+// stream_options.include_usage is requested) or Gemini native shape
+// (`usageMetadata: { promptTokenCount, candidatesTokenCount }`). Returns
+// null when the chunk carries no usage. The usage chunk is the LAST chunk,
+// so the last non-null value wins (never summed — it is a turn total).
+export function parseSseUsageChunk(json: any): { promptTokens: number; completionTokens: number } | null {
+  const u = json?.usage;
+  if (u && typeof u.prompt_tokens === 'number') {
+    return { promptTokens: u.prompt_tokens, completionTokens: typeof u.completion_tokens === 'number' ? u.completion_tokens : 0 };
+  }
+  const m = json?.usageMetadata ?? json?.usage_metadata;
+  if (m && typeof m.promptTokenCount === 'number') {
+    return { promptTokens: m.promptTokenCount, completionTokens: typeof m.candidatesTokenCount === 'number' ? m.candidatesTokenCount : 0 };
+  }
+  return null;
+}
+
+/** Rough token estimate (~1 token per 4 chars) — only the fallback when a
+ * provider sends no usage at all. Never record (0, 0) for a served reply. */
+export function estimateTokensFromChars(chars: number): number {
+  return Math.max(0, Math.ceil(chars / 4));
+}
+
+// STEP 15 (b): wrap an upstream SSE response so its bytes pass through
+// unchanged while the final usage chunk is captured. Exactly one
+// recordUsage call happens per stream: the provider-reported numbers when
+// a usage chunk arrived, otherwise an estimate from the streamed content
+// (completion) and the request messages + tools (prompt). The wrapper is
+// transparent to the relay in mountRouter (it just reads response.body).
+export function meterStreamUsage(model: string, req: RouterChatRequest, upstream: Response): Response {
+  const upstreamBody = upstream.body;
+  if (!upstreamBody) {
+    recordUsage(model, estimateTokensFromChars(JSON.stringify(req.messages ?? []).length + JSON.stringify(req.tools ?? []).length), 0);
+    return upstream;
+  }
+  const promptChars = JSON.stringify(req.messages ?? []).length + JSON.stringify(req.tools ?? []).length;
+  let usage: { promptTokens: number; completionTokens: number } | null = null;
+  let completionChars = 0;
+  let recorded = false;
+  const recordOnce = (): void => {
+    if (recorded) return;
+    recorded = true;
+    if (usage) recordUsage(model, usage.promptTokens, usage.completionTokens);
+    else recordUsage(model, estimateTokensFromChars(promptChars), estimateTokensFromChars(completionChars));
+  };
+  const reader = upstreamBody.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) controller.enqueue(value);
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data:') || trimmed === 'data: [DONE]') continue;
+            try {
+              const json = JSON.parse(trimmed.slice(5).trim());
+              const u = parseSseUsageChunk(json);
+              if (u) usage = u;
+              const content = json?.choices?.[0]?.delta?.content;
+              if (typeof content === 'string') completionChars += content.length;
+            } catch { /* not a JSON SSE data line — ignore */ }
+          }
+        }
+        const tail = decoder.decode();
+        if (tail) {
+          buffer += tail;
+          for (const line of buffer.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data:') || trimmed === 'data: [DONE]') continue;
+            try {
+              const u = parseSseUsageChunk(JSON.parse(trimmed.slice(5).trim()));
+              if (u) usage = u;
+            } catch { /* ignore */ }
+          }
+        }
+      } catch { /* upstream read failed — still record what we have */ }
+      finally {
+        recordOnce();
+        try { controller.close(); } catch { /* already closed */ }
+      }
+    },
+    cancel() {
+      recordOnce();
+      reader.cancel().catch(() => {});
+    },
+  });
+  return new Response(stream, { status: upstream.status, headers: upstream.headers });
+}
+
 export async function routerUsageSummary(): Promise<{
   byModel: Array<{ model: string; requests: number; promptTokens: number; completionTokens: number; totalTokens: number }>;
   totalRequests: number;
@@ -222,13 +320,16 @@ export async function routeChatCompletion(req: RouterChatRequest): Promise<Route
               if (u && typeof u.prompt_tokens === 'number') {
                 recordUsage(model, u.prompt_tokens, u.completion_tokens || 0);
               } else {
-                recordUsage(model, 0, 0);
+                // No usage in the body: estimate from request + reply text
+                // rather than recording (0, 0) (STEP 15 (b)).
+                recordUsage(model, estimateTokensFromChars(JSON.stringify(req.messages ?? []).length + JSON.stringify(req.tools ?? []).length), estimateTokensFromChars(text.length));
               }
-            } catch { recordUsage(model, 0, 0); }
+            } catch { recordUsage(model, estimateTokensFromChars(JSON.stringify(req.messages ?? []).length), estimateTokensFromChars(text.length)); }
             return { response: new Response(text, { status: res.status, headers: { 'Content-Type': 'application/json' } }), model, provider, keyName: key.name };
           }
-          recordUsage(model, 0, 0);
-          return { response: res, model, provider, keyName: key.name };
+          // Streaming: meter the SSE (usage chunk when the provider sends
+          // one, estimates otherwise) — never recordUsage(model, 0, 0).
+          return { response: meterStreamUsage(model, req, res), model, provider, keyName: key.name };
         }
         const errText = await res.text().catch(() => '');
         const retryAfter = res.headers.get('retry-after');
