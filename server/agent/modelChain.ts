@@ -341,11 +341,14 @@ export async function fetchGeminiModels(apiKey: string): Promise<string[]> {
   if (!res.ok) throw new Error(`Gemini /v1beta/models HTTP ${res.status}`);
   const body: any = await res.json();
   const models: any[] = body?.models || [];
+  // STEP 16 (a): NO cap on the live list. The old `.slice(0, 25)` silently
+  // dropped any free model past position 25. Paid/retired models are
+  // dropped at ingestion (isModelExcluded in refreshCatalog), never by
+  // position, so the full live list is safe to keep.
   return models
     .filter((m) => Array.isArray(m?.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
     .map((m) => String(m?.name || '').replace(/^models\//, ''))
-    .filter((id) => id && !id.includes('1.0') && !id.includes('1.5'))
-    .slice(0, 25);
+    .filter((id) => id && !id.includes('1.0') && !id.includes('1.5'));
 }
 
 // Keys for a provider from EVERY store the app uses — env lists, the

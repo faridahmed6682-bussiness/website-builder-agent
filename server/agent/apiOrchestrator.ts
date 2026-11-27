@@ -17,7 +17,7 @@ import { describeImage } from "./vision.ts";
 import { CODING_SKILLS_REGISTRY } from "./skillsRegistry.ts";
 import {
   getChainForTask, nextAfterFailure, noteModelAttempt, recordModelSuccess, recordModelFailure,
-  parseRetryAfter, tierOfModel, degradationBetween, handoffNote, isModelLive,
+  parseRetryAfter, tierOfModel, degradationBetween, handoffNote, isModelLive, isModelExcluded,
   classifyRateLimit, limitLabel, nextMidnightPacificMs, firstOpenRouterFreeModel, type TaskKind, type RateLimitKind,
 } from "./modelChain.ts";
 
@@ -243,8 +243,11 @@ export async function fetchLiveProviderModels(
             const id = String(m.name || '').replace(/^models\//, '');
             return { id, label: m.displayName || id, badge: 'Live · Gemini' };
           })
-          .filter((m: any) => !m.id.includes('1.0') && !m.id.includes('1.5'))
-          .slice(0, 25);
+          .filter((m: any) => !m.id.includes('1.0') && !m.id.includes('1.5'));
+        // STEP 16 (a): NO cap on the live list. The old `.slice(0, 25)`
+        // silently dropped any free model past position 25; the full
+        // live list is returned (paid/retired ids are dropped by the
+        // caller's exclusion gate, never by position).
         if (live.length > 0) return live;
       }
     } else if (['groq', 'cerebras', 'mistral', 'grok', 'custom', 'freellmapi'].includes(provider) && apiKey) {
@@ -350,6 +353,32 @@ export function shouldDropGeminiModel(hitKeyIds: Set<string>, allGeminiKeyIds: S
   if (allGeminiKeyIds.size === 0) return false;
   for (const id of allGeminiKeyIds) if (!hitKeyIds.has(id)) return false;
   return true;
+}
+
+// STEP 16 (b): the primary model for the orchestrator's Gemini chain,
+// gated by the SAME exclusion list the router uses (isModelExcluded).
+// A key whose stored model is paid-only / retired (gemini-4-argon,
+// gemini-4-carbon, *-pro-preview, media models) returns null, so
+// buildGeminiModelChain falls back to the live/default list instead of
+// attempting a model that can never succeed without billing. Pure
+// function so the gate is unit-testable (scripts/step16-proof.mts).
+export function gateGeminiPrimary(primary?: string | null): string | null {
+  if (!primary) return null;
+  return isModelExcluded(primary) ? null : primary;
+}
+
+// STEP 16 (c): the task class for a turn, derived from the user's own
+// message — the same derivation the router uses (routeChatCompletion
+// derives its task from the user messages instead of hardcoding one).
+// The orchestrator's canonical classifier is classifyTask (llmClient):
+// 'reasoning' maps to the 'planning' chain, exactly as
+// streamOpenAICompatible already does. buildGeminiModelChain uses this
+// instead of the hardcoded 'coding' it used to pass to getChainForTask,
+// so a chat/reasoning turn now goes down its own quality-ordered chain
+// instead of the coding chain. Pure function, unit-testable.
+export function orchestratorTurnTask(prompt: string): TaskKind {
+  const classified = classifyTask(prompt);
+  return classified === 'reasoning' ? 'planning' : classified;
 }
 
 // Build the FreeLLMAPI key entry.
@@ -2744,12 +2773,22 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
   const gemini429ByModel = new Map<string, Set<string>>();
   const geminiKeyIds = new Set(activePool.filter((k) => k.provider === 'gemini').map((k) => k.id));
 
+  // The task this turn is really doing, derived from the user's own
+  // message — the same derivation the router uses (routeChatCompletion
+  // derives its task from the user messages instead of hardcoding one).
+  // The orchestrator's canonical classifier is classifyTask (llmClient):
+  // 'reasoning' maps to the 'planning' chain, exactly as
+  // streamOpenAICompatible already does above. The old code hardcoded
+  // 'coding' here, so a chat/reasoning turn was sent down the coding
+  // chain (Hydrogen first) instead of its own quality-ordered chain.
+  const turnTask = orchestratorTurnTask(initialLastMessage);
+
   const buildGeminiModelChain = (primary?: string | null) => {
-    // Live-discovered Gemini-only chain (quality-ordered, healthy only;
-    // Hydrogen already scores 95 so it stays first when live). The
-    // hardcoded list below is the cold-boot fallback when the catalog is
-    // empty — never the authority.
-    const live = getChainForTask('coding', 'gemini', 12).map((e) => e.model);
+    // Live-discovered Gemini-only chain (quality-ordered for THIS turn's
+    // task, healthy only; Hydrogen already scores 95 so it stays first
+    // when live). The hardcoded list below is the cold-boot fallback when
+    // the catalog is empty — never the authority.
+    const live = getChainForTask(turnTask, 'gemini', 12).map((e) => e.model);
     const defaults = [
       'gemini-4-hydrogen',
       'gemini-3.8-flash',
@@ -2757,8 +2796,20 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
       'gemini-3.1-flash-lite',
     ];
     const base = live.length ? live : defaults;
-    const ordered = primary
-      ? [primary, ...base.filter(m => m !== primary)]
+    // STEP 16 (b): the primary model comes from the key's STORED model
+    // (or the explicit override) and used to be prepended unchecked — a
+    // key whose stored model is paid-only (gemini-4-argon/carbon etc.)
+    // was attempted here even though the router blocks those ids. The
+    // same exclusion gate the router uses (gateGeminiPrimary, built on
+    // isModelExcluded) now applies: an excluded primary is dropped and
+    // the chain falls back to the live/default list instead of
+    // attempting a paid model.
+    const usablePrimary = gateGeminiPrimary(primary);
+    if (primary && !usablePrimary) {
+      console.warn(`[orchestrator] Stored primary model ${primary} is paid-only/retired — excluded from the Gemini chain.`);
+    }
+    const ordered = usablePrimary
+      ? [usablePrimary, ...base.filter(m => m !== usablePrimary)]
       : base;
     return ordered.filter(m => !failedGeminiModels.has(m));
   };
