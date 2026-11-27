@@ -53,6 +53,9 @@ export const PLANNING_SEED = [
   'nvidia/nemotron-3-ultra-550b-a55b:free', 'gemini-3.8-flash',
   'qwen/qwen3.6-plus:free', 'auto:smart',
 ];
+/** Legacy seed (router profiles only). chatChain() no longer uses the
+ * quality-ordered 'chat' chain — casual answers run on the cheap chain
+ * (see chatChain), so this stays only for backwards-compatible exports. */
 export const CHAT_SEED = ['auto:fast', 'auto:balanced'];
 
 /** Cheapest capable free models for the TOOL LOOP (Tier 1). Flash-Lite has
@@ -70,19 +73,28 @@ function envChain(varName: string): string[] {
 }
 
 /**
+ * Env override chain: the env list verified live (unverified IDs dropped
+ * with a warning), auto: entries always kept (router profiles, not model
+ * IDs). Returns null when the env var is empty or nothing survives.
+ */
+function verifiedEnvChain(varName: string): string[] | null {
+  const override = envChain(varName);
+  if (!override.length) return null;
+  const verified = verifyLive(override);
+  const dropped = override.filter((m) => !verified.includes(m) && !m.startsWith('auto:'));
+  if (dropped.length) console.warn(`[llm] Env ${varName} models not in the live catalog, dropped: ${dropped.join(', ')}`);
+  const kept = [...verified, ...override.filter((m) => m.startsWith('auto:'))];
+  return kept.length ? kept : null;
+}
+
+/**
  * Live chain for a task: env override (verified live, unverified IDs dropped
  * with a warning) else the discovered quality-ordered chain. Never returns
  * an unverified hardcoded model ID — the floor is the router's named chains.
  */
 export function liveChain(task: TaskKind, envVar: string, seed: string[]): string[] {
-  const override = envChain(envVar);
-  if (override.length) {
-    const verified = verifyLive(override);
-    const dropped = override.filter((m) => !verified.includes(m) && !m.startsWith('auto:'));
-    if (dropped.length) console.warn(`[llm] Env ${envVar} models not in the live catalog, dropped: ${dropped.join(', ')}`);
-    const kept = [...verified, ...override.filter((m) => m.startsWith('auto:'))];
-    if (kept.length) return kept;
-  }
+  const override = verifiedEnvChain(envVar);
+  if (override) return override;
   const chain = getChainForTask(task, undefined, 8).map((e) => e.model);
   if (chain.length) return chain;
   return seed.filter((m) => m.startsWith('auto:'));
@@ -90,7 +102,21 @@ export function liveChain(task: TaskKind, envVar: string, seed: string[]): strin
 
 export function codingChain(): string[] { return liveChain('coding', 'FREE_LLM_API_MODEL_CODING', CODING_SEED); }
 export function planningChain(): string[] { return liveChain('planning', 'FREE_LLM_API_MODEL_PLANNING', PLANNING_SEED); }
-export function chatChain(): string[] { return liveChain('chat', 'FREE_LLM_API_MODEL_CHAT', CHAT_SEED); }
+/**
+ * Casual/chat answers run on the CHEAP model (Tier 1) — never Hydrogen.
+ * The old implementation used liveChain('chat'), whose quality-ordered
+ * chain scores Hydrogen highest for chat (90, modelChain.ts), so a plain
+ * "hi" burned Hydrogen quota — contradicting the cheap-model rule (cheap
+ * model for tools/casual chat; Hydrogen ONLY for planning/coding/debugging/
+ * review) and the intent gate's "one fast-model call" comment. Env
+ * override FREE_LLM_API_MODEL_CHAT (verified live) wins; otherwise the
+ * cheap chain: live-verified Flash-Lite / gpt-oss-20b, auto:fast floor.
+ * This also covers the intent gate's classification call and chatOnce's
+ * default chain (both call chatChain()).
+ */
+export function chatChain(): string[] {
+  return verifiedEnvChain('FREE_LLM_API_MODEL_CHAT') ?? cheapChain();
+}
 
 /**
  * Cheap-model chain for the tool loop (Tier 1). Unlike liveChain() this does
@@ -99,14 +125,8 @@ export function chatChain(): string[] { return liveChain('chat', 'FREE_LLM_API_M
  * with auto:fast as the floor, so the loop never burns Hydrogen quota.
  */
 export function cheapChain(): string[] {
-  const override = envChain('FREE_LLM_API_MODEL_CHEAP');
-  if (override.length) {
-    const verified = verifyLive(override);
-    const dropped = override.filter((m) => !verified.includes(m) && !m.startsWith('auto:'));
-    if (dropped.length) console.warn(`[llm] Env FREE_LLM_API_MODEL_CHEAP models not in the live catalog, dropped: ${dropped.join(', ')}`);
-    const kept = [...verified, ...override.filter((m) => m.startsWith('auto:'))];
-    if (kept.length) return kept;
-  }
+  const override = verifiedEnvChain('FREE_LLM_API_MODEL_CHEAP');
+  if (override) return override;
   const verified = verifyLive(CHEAP_SEED.filter((m) => !m.startsWith('auto:')));
   return [...verified, 'auto:fast'];
 }
