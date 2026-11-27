@@ -2537,7 +2537,27 @@ export async function handleOrchestratedChat(
         res.end();
         return;
       }
-      // Direct answer failed — fall through to the agent loop with tools off.
+      // STEP 6 (P0): any other casual failure ALSO stops here — do NOT fall
+      // through to the agent loop. chatOnce already walks the whole cheap
+      // chain (and the embedded router does its own failover), so every
+      // cheap model has been tried by the time we are here. Falling through
+      // would re-run the full retry loop (maxAttempts = pool*2, plus the
+      // 12-model studio fallback) on Hydrogen for a plain "hi". Answer
+      // with a short friendly error and end instead.
+      const casualFailureMessage = '⚠️ দুঃখিত, এখন উত্তর দিতে পারছি না — প্রোভাইডার সাময়িকভাবে সাড়া দিচ্ছে না। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন। সমস্যা চলতে থাকলে Keys ট্যাবে Gemini / Groq / OpenRouter কী-র স্থিতি চেক করুন।';
+      addSystemLog({
+        level: 'error',
+        category: 'execution',
+        message: `Casual direct answer failed: ${msg.slice(0, 180)}`,
+      });
+      sendEvent({ type: 'error', error: casualFailureMessage });
+      finalAssistantText = casualFailureMessage;
+      await saveChatTurn(sessionId || 'default', initialLastMessage, casualFailureMessage).catch(() => {});
+      const totals = usageTotals(usageLedger);
+      recordTurnUsage(sessionId || 'default', totals);
+      sendEvent({ type: 'usage_summary', usage: totals });
+      res.end();
+      return;
     }
   }
   const allowTools = !isConversationalPrompt;
