@@ -163,6 +163,69 @@ function matchOpenInBrowser(p: string, sessionId: string | undefined, origin: st
   return { kind: 'browser', tool: 'browser_goto', args: { url: target }, label: `⚡ Open in browser: ${target} (direct — no model call)`, cacheable: false };
 }
 
+// --- Browser work: "open the browser and use a site" ----------------------
+// A request that explicitly asks to open the browser AND do something in a
+// named site (e.g. "ব্রাউজার খুলে গুগল এআই স্টুডিওকে প্রম্পট দিয়ে
+// ওয়েবসাইট বানাও") is BROWSER WORK: the work happens IN the browser with
+// the browser_* tools, not in Nexus's own build pipeline. The pure-nav
+// matcher above runs first (inside matchDirectCommand), so anything
+// reaching here is not pure navigation; plain build requests (no browser
+// phrase) never match either — they stay on the normal pipeline.
+export interface BrowserWorkRequest {
+  /** Human name of the site, e.g. 'Google AI Studio'. */
+  site: string;
+  /** URL to open first in the live browser. */
+  url: string;
+  /** The user's full request — the action to perform in the site. */
+  action: string;
+}
+
+// The request must name opening the browser (Bengali "ব্রাউজার খুলে" is the
+// idiomatic form; "ব্রাউজারে" covers "ব্রাউজারে গিয়ে ... করো").
+const BROWSER_OPEN_PHRASE_RE =
+  /(ব্রাউজার\s*খুলে|ব্রাউজারে|ব্রাউজার\s*খোলো|ব্রাউজার\s*দিয়ে|ব্রাউজার\s*চালু|open\s+(?:the\s+|a\s+)?browser|launch\s+(?:the\s+|a\s+)?browser|in\s+the\s+browser|go\s+to\s+\S+\s+in\s+the\s+browser)/i;
+
+// Well-known sites the user may name without a URL. Order matters: Google
+// AI Studio must be checked before Google (the name contains "গুগল").
+const KNOWN_BROWSER_SITES: Array<{ site: string; url: string; re: RegExp }> = [
+  { site: 'Google AI Studio', url: 'https://aistudio.google.com', re: /(গুগল\s*এআই\s*স্টুডিও|এআই\s*স্টুডিও|ai\s*studio|aistudio|google\s*ai\s*studio)/i },
+  { site: 'Gemini', url: 'https://gemini.google.com', re: /(\bgemini\b|জেমিনি)/i },
+  { site: 'ChatGPT', url: 'https://chatgpt.com', re: /(chatgpt|চ্যাটজিপিটি)/i },
+  { site: 'YouTube', url: 'https://www.youtube.com', re: /(youtube|ইউটিউব)/i },
+  { site: 'Gmail', url: 'https://mail.google.com', re: /(gmail|জিমেইল)/i },
+  { site: 'Google', url: 'https://www.google.com', re: /(গুগল|google)/i },
+  { site: 'GitHub', url: 'https://github.com', re: /(github|গিটহাব)/i },
+  { site: 'Facebook', url: 'https://www.facebook.com', re: /(facebook|ফেসবুক)/i },
+  { site: 'TradingView', url: 'https://www.tradingview.com', re: /(tradingview|ট্রেডিংভিউ)/i },
+  { site: 'Daraz', url: 'https://www.daraz.com.bd', re: /(daraz|দারাজ)/i },
+];
+
+/** Display name for an explicit URL (its hostname), e.g. 'aistudio.google.com'. */
+function hostnameOf(url: string): string {
+  try { return new URL(url).hostname || 'the site'; } catch { return 'the site'; }
+}
+
+/**
+ * Match a "open the browser and use site X to do Y" request. Returns the
+ * site to open first plus the user's action, or null when the request is
+ * not browser work (pure navigation, a plain build, or a workspace task).
+ * A site must be resolvable — an explicit URL/domain in the message wins
+ * over the known-site names; with no site at all there is nothing to open.
+ */
+export function matchBrowserWork(prompt: string): BrowserWorkRequest | null {
+  const p = cleanPrompt(prompt);
+  if (!p) return null;
+  if (!BROWSER_OPEN_PHRASE_RE.test(p)) return null;
+  // A workspace file path means workspace work, not browser work.
+  if (FILE_PATH_RE.test(p)) return null;
+  const url = extractOpenUrl(p);
+  if (url) return { site: hostnameOf(url), url, action: p };
+  for (const s of KNOWN_BROWSER_SITES) {
+    if (s.re.test(p)) return { site: s.site, url: s.url, action: p };
+  }
+  return null;
+}
+
 /** Match a deterministic command. Returns null when the request needs the model. */
 export function matchDirectCommand(prompt: string, sessionId?: string, origin?: string): DirectCommand | null {
   const p = cleanPrompt(prompt);

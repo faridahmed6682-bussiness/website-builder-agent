@@ -35,6 +35,10 @@ export interface SystemInstructionOptions {
   // streamOpenAICompatible reads it to decide if this is the session's
   // first build (review-worthy) or a follow-up (usually not).
   isFirstBuildOfSession?: boolean;
+  // BROWSER WORK (set by handleOrchestratedChat when the user explicitly
+  // asked to open the browser and use a site): the work happens IN the
+  // live browser, not in workspace files. The browser is already open.
+  browserWork?: { site: string; url: string; task: string };
 }
 
 export function getNexusSystemInstruction(mode: string = 'general', options: SystemInstructionOptions = {}): string {
@@ -62,9 +66,32 @@ CONVERSATIONAL FAST-PATH RULE:
         ? `\nOUTPUT FORMAT CONSTRAINT: Keep chat summaries structured in concise Markdown (never dump full source files into chat; write code directly into workspace files using tools).`
         : '';
 
-  const multiAgentSection = options.multiAgent
+  // A browser-work turn is NOT a build: the multi-agent team
+  // (omo_coordinate first, then file writes) must not run — the work
+  // happens in the live browser instead. The BROWSER-WORK section below
+  // carries the turn's instructions.
+  const multiAgentSection = options.multiAgent && !options.browserWork
     ? `\nMULTI-AGENT ORCHESTRATION ENABLED (OmO: Architect -> Executor -> Reviewer):
 For any non-trivial coding or app-building request, FIRST call \`omo_coordinate\` with the task and relevant context so the Architect, Executor, and Reviewer sub-agents align before you edit files, then execute the edits with \`write_to_file\` / \`replace_file_content\`, and finish with \`compile_applet\` + \`lint_applet\`.`
+    : '';
+
+  // BROWSER WORK — the user explicitly asked to open the browser and use a
+  // site (e.g. "open the browser and give Google AI Studio a prompt to
+  // build a website"). This section OVERRIDES the build pipeline below:
+  // no omo_coordinate, no file writes, no workspace build — the work
+  // happens in the live browser, which is already open at the URL.
+  const browserWorkSection = options.browserWork
+    ? `
+
+================================================================================
+# BROWSER WORK — THIS TURN HAPPENS IN THE LIVE BROWSER, NOT IN WORKSPACE FILES
+================================================================================
+- The user explicitly asked to open the browser and use ${options.browserWork.site} (${options.browserWork.url}) to do this: "${options.browserWork.task}".
+- The live browser is ALREADY OPEN at that URL — the user is watching it in the Browser tab / mini panel. Do the requested work IN that browser using ONLY these tools: browser_goto (only to navigate to another page), browser_click, browser_type, browser_press_key, browser_screenshot. Use browse_vision when you need to READ what is on the page (a screenshot alone does not show you pixels).
+- Do NOT call omo_coordinate. Do NOT call write_to_file / replace_file_content / multi_replace_file_content or any other file tool. Do NOT build anything in the workspace. The PLAN-FIRST rule and the file-writing rules below do NOT apply to this turn — you write no files.
+- Narrate briefly, in the user's language, what you are doing in the browser (one short line per step — e.g. what you typed or clicked).
+- If the site asks for sign-in, a CAPTCHA, an OTP, or a payment: STOP. Do NOT sign in (you have no credentials), do NOT solve CAPTCHAs, do NOT fake it. Tell the user plainly, in their language, to press Take over, sign in themselves, then Give back to agent — and end your reply there.
+- When the work in the browser is done, summarize briefly what happened there (what you typed/clicked and what the site showed). Never paste code into chat.`
     : '';
 
   const sessionPreviewTarget = options.sessionId
@@ -113,7 +140,7 @@ ${options.lessons.trim().slice(0, 3000)}`
 
   return `You are the coding engine behind Google AI Studio Build. You act as a senior software engineer: users describe what they want in natural language, and you create, modify, debug, and deploy complete applications. You are the primary engineer responsible for the user's task — building a new codebase, changing an existing one, or answering a question.
 
-Current Mode: ${mode}${personaSection}${customSection}${outputFormatSection}${multiAgentSection}
+Current Mode: ${mode}${personaSection}${customSection}${outputFormatSection}${multiAgentSection}${browserWorkSection}
 
 ================================================================================
 # WHEN TO CALL TOOLS VS REPLY DIRECTLY
