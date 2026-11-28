@@ -34,7 +34,7 @@ import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
 
-export type DirectKind = 'tool' | 'local' | 'edit';
+export type DirectKind = 'tool' | 'local' | 'edit' | 'browser';
 
 /** Deterministic file edit (kind 'edit'). Never cached — a write. */
 export interface DirectEdit {
@@ -76,8 +76,95 @@ function cleanPrompt(prompt: string): string {
   return (prompt || '').trim();
 }
 
+// --- Open in the live browser ----------------------------------------------
+// Purely navigational requests, matched narrowly: every word (after
+// removing an optional URL) must be a navigational word, at least one must
+// be a navigation verb, and the request must name a browser/site/URL object
+// (or be the idiomatic "খুলে দেখাও"). Anything else falls through to the
+// normal pipeline — the allowlist below is the backstop for words this
+// list did not think of.
+const NAV_VERBS = new Set([
+  'open', 'show', 'view', 'launch', 'load', 'go', 'browse',
+  'খোলো', 'খুলো', 'দেখাও', 'দেখান', 'চালাও', 'খুলে',
+]);
+const NAV_WORDS = new Set([
+  ...NAV_VERBS,
+  'in', 'the', 'a', 'an', 'my', 'this', 'that', 'it', 'site', 'website', 'web',
+  'page', 'link', 'url', 'browser', 'tab', 'please', 'me', 'to', 'preview',
+  'ব্রাউজারে', 'ব্রাউজার', 'সাইট', 'সাইটটা', 'সাইটটি', 'ওয়েবসাইট', 'ওয়েবসাইটটা',
+  'ওয়েবসাইটটি', 'পেজ', 'পেজটা', 'লিংক', 'লিঙ্ক', 'এটা', 'এটি', 'তো', 'প্লিজ',
+  'দয়া', 'করে', 'প্রিভিউ',
+]);
+const NAV_OBJECTS = new Set([
+  'browser', 'site', 'website', 'web', 'page', 'link', 'url', 'preview',
+  'ব্রাউজারে', 'ব্রাউজার', 'সাইট', 'সাইটটা', 'সাইটটি', 'ওয়েবসাইট', 'ওয়েবসাইটটা',
+  'ওয়েবসাইটটি', 'পেজ', 'পেজটা', 'লিংক', 'লিঙ্ক', 'প্রিভিউ',
+]);
+// A verb from this set means the request asks for work beyond navigation
+// (build/change/search/…). English words use \b so "add" never matches
+// inside "address"; Bengali has no \b (ASCII-only), so those stand alone.
+const OPEN_REJECT_RE =
+  /\b(?:build|make|create|fix|repair|debug|deploy|publish|write|edit|change|update|add|remove|delete|generate|design|improve|refactor|implement|search|find|look\s*up|count|compare|analyse|analyze|run|test|install|upload|download|convert|clone|import|export|push|move|rename|copy)\b|(?:বানাও|বানান|তৈরি\s*করো|তৈরি\s*কর|ঠিক\s*করো|ঠিক\s*কর|যোগ\s*করো|পরিবর্তন|লিখো|এডিট|মুছে|সরাও|খুঁজে|খোঁজো|ডিপ্লয়|আপলোড|ডাউনলোড|বলো|বলুন)/i;
+
+const HTTP_URL_RE = /https?:\/\/[^\s"'<>]+/i;
+const BARE_DOMAIN_RE = /\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|dev|app|bd|co|me|ai|xyz|info|site|online|live|tech|blog|news|shop|store|gov|edu)(?:\/[^\s"'<>]*)?/i;
+
+/** Extract a URL from the message (https://… or a bare domain). '' when none. */
+function extractOpenUrl(text: string): string {
+  const m = HTTP_URL_RE.exec(text);
+  if (m) return m[0].replace(/[.,;:!?)\]।]+$/, '');
+  const bare = BARE_DOMAIN_RE.exec(text);
+  if (bare) return 'https://' + bare[0].replace(/[.,;:!?)\]।]+$/, '');
+  return '';
+}
+
+/**
+ * Resolve the URL a bare "open the site" request should open: the current
+ * session's preview file when it exists, else the shared projects/index.html,
+ * else the site home. Needs an absolute origin (the worker is a separate
+ * server and cannot load a relative path). Origin comes from the chat
+ * request (the page the user is on); Render's RENDER_EXTERNAL_URL is the
+ * server-side fallback. Returns null when no origin is known — the caller
+ * then falls through to the normal pipeline instead of opening a bad URL.
+ */
+export function resolveBrowserOpenUrl(sessionId: string | undefined, origin?: string): string | null {
+  const base = (origin || process.env.RENDER_EXTERNAL_URL || process.env.SITE_URL || process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '');
+  if (!base) return null;
+  const cwd = process.cwd();
+  const candidates = sessionId
+    ? [`projects/${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}/index.html`, 'projects/index.html']
+    : ['projects/index.html'];
+  for (const c of candidates) {
+    try {
+      if (fsSync.existsSync(path.join(cwd, c))) return `${base}/${c}`;
+    } catch { /* ignore */ }
+  }
+  return `${base}/`;
+}
+
+/** Match a purely navigational "open in browser" request. Null otherwise. */
+function matchOpenInBrowser(p: string, sessionId: string | undefined, origin: string | undefined): DirectCommand | null {
+  if (OPEN_REJECT_RE.test(p)) return null;
+  if (FILE_PATH_RE.test(p)) return null;
+  const url = extractOpenUrl(p);
+  let rest = p.replace(new RegExp(HTTP_URL_RE.source, 'gi'), ' ');
+  rest = rest.replace(new RegExp(BARE_DOMAIN_RE.source, 'gi'), ' ');
+  const tokens = rest.toLowerCase().replace(/[।!?,.;:'"()[\]{}]+/g, ' ').split(/\s+/).filter(Boolean);
+  if (!tokens.length) return null;
+  if (!tokens.some((t) => NAV_VERBS.has(t))) return null;
+  if (!tokens.every((t) => NAV_WORDS.has(t))) return null;
+  // Idiomatic "খুলে দেখাও" (open it up and show me) names no object but
+  // means the current site — same as "open the site" with no URL.
+  const openShowPhrase = tokens.length === 2 && tokens[0] === 'খুলে' && (tokens[1] === 'দেখাও' || tokens[1] === 'দেখান');
+  const hasObject = !!url || openShowPhrase || tokens.some((t) => NAV_OBJECTS.has(t));
+  if (!hasObject) return null;
+  const target = url || resolveBrowserOpenUrl(sessionId, origin);
+  if (!target) return null;
+  return { kind: 'browser', tool: 'browser_goto', args: { url: target }, label: `⚡ Open in browser: ${target} (direct — no model call)`, cacheable: false };
+}
+
 /** Match a deterministic command. Returns null when the request needs the model. */
-export function matchDirectCommand(prompt: string, sessionId?: string): DirectCommand | null {
+export function matchDirectCommand(prompt: string, sessionId?: string, origin?: string): DirectCommand | null {
   const p = cleanPrompt(prompt);
   if (!p) return null;
   const lower = p.toLowerCase();
@@ -121,6 +208,18 @@ export function matchDirectCommand(prompt: string, sessionId?: string): DirectCo
       return { kind: 'tool', tool: 'view_file', args: { AbsolutePath: m[1] }, label: `⚡ ${m[1]} (direct — no model call)`, cacheable: true };
     }
   }
+
+  // --- Open in the live browser (Tier-0 direct action) ---------------------
+  // A purely navigational request ("open X in the browser", "ব্রাউজারে
+  // খোলো") must NOT run the multi-agent team: it starts a live browser
+  // session and navigates — one tool call, no omo_coordinate, no file
+  // edits, no rebuild. Narrow by construction (matchOpenInBrowser): the
+  // whole message (minus an optional URL) must consist only of
+  // navigational words, with an explicit browser/site/URL object. Anything
+  // else — a build/change/search verb, an extra clause, a file path —
+  // falls through to the normal pipeline.
+  const browserCmd = matchOpenInBrowser(p, sessionId, origin);
+  if (browserCmd) return browserCmd;
 
   // --- Zero-cost tool routing (Step 14) ------------------------------------
   // These tools cost no API calls (offline snapshots / local corpus /
