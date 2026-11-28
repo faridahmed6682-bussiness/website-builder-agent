@@ -15,6 +15,7 @@ import { splitHistoryWindow, ensureRollingSummary, summaryTurn } from "./history
 import { readLessons, recordLesson } from "./lessons.ts";
 import { newTurnUsage, addLlmStep, addToolCall, usageTotals, recordTurnUsage, costTierOfModel, estimateTokens, toolsSchemaTokensEstimate, sessionUsageSummary, type TurnUsage } from "./usage.ts";
 import { parseSseUsageChunk } from "../router/index.ts";
+import { tryRunParallelBuild, clearParallelBuildForSession } from "./parallelBuild.ts";
 import { describeImage, asksAboutImage } from "./vision.ts";
 import { CODING_SKILLS_REGISTRY } from "./skillsRegistry.ts";
 import {
@@ -1124,12 +1125,59 @@ async function executeToolWithLiveEvents(
     filePath: mapped.filePath,
   });
 
-  const toolResult = await executeServerTool(
+  let toolResult = await executeServerTool(
     callName,
     callArgs,
     (action) => sendEvent({ type: "action", action }),
     execCtx
   );
+
+  // Parallel multi-agent build (2026-11-29): ONE main agent (this loop) is
+  // the only agent the user talks to. When it calls omo_coordinate and the
+  // planner splits the build into >=2 independent parts, background coder
+  // workers run in parallel (each on its own key) and their files are
+  // merged here. Workers never talk to the user; the main agent reports the
+  // result. Fail-soft — tryRunParallelBuild returns null for single-part /
+  // unparseable plans and the serial path runs unchanged.
+  // The summary goes FIRST in the tool result: tool results are truncated
+  // to 3000 chars from the head, so the "do NOT rewrite these files" note
+  // must survive the cut. `modifiedFiles` makes both loops absorb the
+  // parallel-written files into mutatedFiles / didMutateFiles, so the
+  // verify-then-fix + reviewer gates check the merged result as today; the
+  // existing branches below emit file_modified / preview_ready for them.
+  if (callName === 'omo_coordinate' && toolResult && !toolResult.error) {
+    const phases = (toolResult as any)?.coordinationPhases;
+    const planText = Array.isArray(phases)
+      ? phases.map((p: any) => String(p?.output || '')).join('\n')
+      : '';
+    const pb = await tryRunParallelBuild({
+      planText,
+      task: String(callArgs?.task || ''),
+      sessionId: execCtx.sessionId,
+      execCtx,
+      sendEvent,
+      isCancelled: () => isTurnCancelled(execCtx.sessionId),
+    });
+    if (pb && pb.ran && !pb.cancelled) {
+      const summary = {
+        ran: true,
+        coders: pb.parts.length,
+        workers: pb.parts.map((p) => ({ provider: p.provider, model: p.model, status: p.status })),
+        writtenFiles: pb.writtenFiles,
+        failedFiles: pb.failedFiles,
+        note: pb.writtenFiles.length
+          ? `Parallel background coders already wrote these files — do NOT rewrite them: ${pb.writtenFiles.join(', ')}. ${pb.failedFiles.length ? `Still to do — write them yourself: ${pb.failedFiles.join(', ')}.` : 'Verify the build (compile_applet / lint_applet), fix any gaps, then summarise.'}`
+          : `Parallel background coders could not write any files. Build them yourself with write_to_file as planned (${pb.failedFiles.join(', ') || 'no output'}).`,
+      };
+      toolResult = {
+        parallelBuild: summary,
+        ...toolResult,
+        modifiedFiles: pb.writtenFiles,
+        previewUrl: pb.previewUrl,
+        deployedHtml: pb.deployedHtml,
+      };
+    }
+  }
 
   const durationSec = Math.max(0.1, Number(((Date.now() - startTime) / 1000).toFixed(1)));
   const hasError = Boolean(toolResult?.error || toolResult?.success === false);
@@ -1874,6 +1922,18 @@ export async function streamOpenAICompatible(
       // failed write changed nothing on disk.
       if (!failed) mutatedChars += writtenCharsForToolCall(toolName, args);
     }
+    // Parallel build: files the background coders wrote (attached to the
+    // omo_coordinate result as modifiedFiles) count as mutations, so the
+    // verify-then-fix + reviewer gates below check the merged result as
+    // today. (verificationDone / reviewed are declared just below this
+    // closure — they are only read at call time, during rounds, so this is
+    // safe.)
+    if (Array.isArray(toolResult?.modifiedFiles) && toolResult.modifiedFiles.length) {
+      for (const f of toolResult.modifiedFiles) mutatedFiles.add(String(f));
+      didMutateFiles = true;
+      verificationDone = false;
+      reviewed = false;
+    }
     if (escalatedToHydrogen) return;
     const isCheapLoop = cheapChain().includes(targetModel) || targetModel.startsWith('auto:');
     if (!isCheapLoop) return;
@@ -2567,6 +2627,14 @@ export async function runGeminiAgentLoop(
           const toolResult = await executeToolWithLiveEvents(call.name, call.args, sendEvent, execCtx);
           const fp = (toolResult as any)?.cleanPath || call.args?.TargetFile || call.args?.filePath || call.args?.path || '';
           if (fp) mutatedFiles.add(String(fp));
+          // Parallel build: files the background coders wrote (attached to
+          // the omo_coordinate result as modifiedFiles) count as mutations
+          // for the checkpoint, so verify / reviewer see the merged result.
+          const pbFiles = (toolResult as any)?.modifiedFiles;
+          if (Array.isArray(pbFiles) && pbFiles.length) {
+            didMutateFiles = true;
+            for (const f of pbFiles) mutatedFiles.add(String(f));
+          }
           return {
             functionResponse: {
               name: call.name,
@@ -2592,6 +2660,12 @@ export async function runGeminiAgentLoop(
         const toolResult = await executeToolWithLiveEvents(tc.name, tc.args, sendEvent, execCtx);
         const fp = (toolResult as any)?.cleanPath || tc.args?.TargetFile || tc.args?.filePath || tc.args?.path || '';
         if (fp) mutatedFiles.add(String(fp));
+        // Parallel build: see the functionCalls branch above.
+        const pbFiles = (toolResult as any)?.modifiedFiles;
+        if (Array.isArray(pbFiles) && pbFiles.length) {
+          didMutateFiles = true;
+          for (const f of pbFiles) mutatedFiles.add(String(f));
+        }
         results.push({ tool: tc.name, result: truncateToolOutput(toolResult) });
       }
       nextPayload = `[TOOL EXECUTION RESULTS]:\n${JSON.stringify(results)}\n\nContinue immediately using real function calls (write_to_file / replace_file_content) to write all requested code into workspace files. Do NOT output tool_calls JSON in chat.`;
@@ -2772,6 +2846,9 @@ export async function handleOrchestratedChat(
   // A fresh turn starts un-cancelled — a previous turn's stop must never
   // leak into this one.
   clearTurnCancellation(sessionId);
+  // Same for the parallel build: a fresh turn may run its parallel coders
+  // once, even if a previous turn already did.
+  clearParallelBuildForSession(sessionId);
   const messages = Array.isArray(rawMessages) ? rawMessages : [];
   if (messages.length === 0) {
     sendEvent({

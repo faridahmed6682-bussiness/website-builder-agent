@@ -40,6 +40,11 @@ export interface ToolExecutionContext {
   liveSessions?: Array<{ id: string; url?: string }>;
   llmInvoker?: (systemPrompt: string, userPrompt: string) => Promise<string>;
   onAskQuestion?: (questions: AskQuestionItem[]) => Promise<AskQuestionAnswerPayload>;
+  /** Parallel multi-agent build (2026-11-29): set once the parallel coders
+   * ran this turn, so a second omo_coordinate call in the same turn does not
+   * re-run them (the module-level session guard in parallelBuild.ts is the
+   * durable guard across key rotations; this is the fast path). */
+  parallelBuildRan?: boolean;
   onAgentStep?: (step: {
     id: string;
     kind: 'agent' | 'thought' | 'qc' | 'command';
@@ -1363,11 +1368,16 @@ export async function runOmoCoordinate(
   // ONE planner sub-call on the cheap chain (cheapChain() — live-verified
   // cheap seeds + auto:fast floor, never Hydrogen, never a hardcoded model
   // ID), output-capped at OMO_PLAN_MAX_TOKENS.
+  // The plan has THREE sections: the PARTS section lets the parallel build
+  // (parallelBuild.ts) split the work into independent parts — each a
+  // disjoint set of files — so up to 4 background coder workers can build
+  // them at the same time on distinct keys. "PARTS: none" (single file, or
+  // parts that cannot be independent) keeps the turn on the serial path.
   let planText: string | null = null;
   try {
     const { text, model } = await chatOnce({
-      system: 'You are the Planner Sub-Agent in a multi-agent engineering pipeline. Output a concrete plan only: an architectural specification, then the exact workspace file operations.',
-      user: `Task: ${task}\n${context ? `Context: ${context}\n` : ''}${workspaceSnapshot}\n\nRespond in exactly two sections:\nARCHITECTURE: Provide a concise, concrete architectural specification (target files, components/routes, data flow, and verification criteria). Keep it under 180 words.\nFILE OPERATIONS: List the exact files to create/edit via write_to_file or replace_file_content, and exact packages/commands if needed. Keep under 160 words.`,
+      system: 'You are the Planner Sub-Agent in a multi-agent engineering pipeline. Output a concrete plan only: an architectural specification, then the exact workspace file operations, then the parallel-work split.',
+      user: `Task: ${task}\n${context ? `Context: ${context}\n` : ''}${workspaceSnapshot}\n\nRespond in exactly three sections:\nARCHITECTURE: Provide a concise, concrete architectural specification (target files, components/routes, data flow, and verification criteria). Keep it under 180 words.\nFILE OPERATIONS: List the exact files to create/edit via write_to_file or replace_file_content, and exact packages/commands if needed. Keep under 160 words.\nPARTS: Split the work into 2-4 independent parts that can be built in parallel. Each part is a disjoint set of files — no file in two parts, and no part depends on another part's output. If the build is a single file or the parts cannot be independent, write "PARTS: none". Format exactly:\nPARTS:\n1. <short title> — files: <path1>, <path2>\n2. <short title> — files: <path3>`,
       chain: cheapChain(),
       maxTokens: OMO_PLAN_MAX_TOKENS,
       timeoutMs: OMO_PLAN_TIMEOUT_MS,
