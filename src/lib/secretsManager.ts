@@ -147,6 +147,63 @@ export function saveLocalKeys(keys: KeyConfig[]): void {
   }
 }
 
+// Self-heal after a server redeploy wiped the server's key stores
+// (.secrets.json + data/router-keys.json are ephemeral on Render): if this
+// browser still holds keys locally but the server's synced pool is empty,
+// re-send the full local list through the same endpoint the save path uses
+// (POST /api/secrets — replace semantics, idempotent). Runs once on app
+// load; silent — chat just works on first load after a deploy.
+// - Only sends keys the user already stored locally; never invents keys.
+// - Checks pool-status first: when the server already has synced keys,
+//   nothing is sent (no needless re-sends, and keys saved from another
+//   browser are never overwritten).
+// - Env keys (id starts with 'env-') are server-owned: they are never
+//   counted as "synced" and never re-sent (saveSecrets strips them anyway).
+// - A non-JSON answer (Render free waking up, HTML page) is retried once
+//   after 5 s, matching the key-test retry; any other failure is silent
+//   and the next app load retries.
+const RESTORE_RETRY_MS = 5000;
+
+export async function restoreServerKeysFromLocal(): Promise<boolean> {
+  let local: KeyConfig[];
+  try {
+    local = getLocalKeys().filter((k) => (k.apiKey || '').trim());
+  } catch {
+    return false;
+  }
+  if (!local.length) return false;
+  const fetchPool = async (): Promise<any[] | null> => {
+    try {
+      const res = await fetch('/api/secrets/pool-status');
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) return null;
+      const data = await res.json().catch(() => null);
+      if (!data || !Array.isArray((data as any).pool)) return null;
+      return (data as any).pool;
+    } catch {
+      return null;
+    }
+  };
+  let pool = await fetchPool();
+  if (pool === null) {
+    await new Promise((r) => setTimeout(r, RESTORE_RETRY_MS));
+    pool = await fetchPool();
+  }
+  if (pool === null) return false;
+  const syncedCount = pool.filter((p: any) => !String(p?.id || '').startsWith('env-')).length;
+  if (syncedCount > 0) return false;
+  try {
+    const res = await fetch('/api/secrets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys: local }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export function addLocalKey(keyData: Partial<KeyConfig>): KeyConfig {
   const current = getLocalKeys();
   const provider = keyData.provider || 'gemini';

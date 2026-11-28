@@ -73,7 +73,7 @@ import { LogsModal } from './components/LogsModal';
 import { AskQuestionModal, PendingQuestionPrompt } from './components/AskQuestionModal';
 import { SidebarDrawer } from './components/SidebarDrawer';
 import { GoogleAIStudioCoderView } from './components/GoogleAIStudioCoderView';
-import { getLocalKeys } from './lib/secretsManager';
+import { getLocalKeys, restoreServerKeysFromLocal } from './lib/secretsManager';
 import { STATIC_TEMPLATES, type StaticTemplate } from './lib/templates';
 import { ActionStep } from './types/secrets';
 import { 
@@ -274,6 +274,14 @@ export default function App() {
         setPreviewUrl(`${window.location.origin}/projects/index.html`);
       }
     }).catch(err => console.warn("Failed to load initial session from IndexedDB:", err));
+  }, []);
+
+  // Self-heal after a server redeploy wiped .secrets.json: if this browser
+  // still holds API keys locally but the server's synced pool is empty,
+  // re-send them (same endpoint the save path uses). Silent — chat just
+  // works on first load after a deploy, with no key re-entry.
+  useEffect(() => {
+    restoreServerKeysFromLocal().catch(() => {});
   }, []);
 
   const scrollToBottom = () => {
