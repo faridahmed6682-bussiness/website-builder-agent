@@ -198,6 +198,9 @@ const KNOWN_BROWSER_SITES: Array<{ site: string; url: string; re: RegExp }> = [
   { site: 'Facebook', url: 'https://www.facebook.com', re: /(facebook|ফেসবুক)/i },
   { site: 'TradingView', url: 'https://www.tradingview.com', re: /(tradingview|ট্রেডিংভিউ)/i },
   { site: 'Daraz', url: 'https://www.daraz.com.bd', re: /(daraz|দারাজ)/i },
+  { site: 'Lovable', url: 'https://lovable.dev', re: /(lovable|লাভেবল)/i },
+  { site: 'Bolt', url: 'https://bolt.new', re: /(bolt\.new|\bbolt\b|বোল্ট)/i },
+  { site: 'v0', url: 'https://v0.dev', re: /\bv0\b/i },
 ];
 
 /** Display name for an explicit URL (its hostname), e.g. 'aistudio.google.com'. */
