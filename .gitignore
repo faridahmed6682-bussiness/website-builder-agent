@@ -13,3 +13,5 @@ coverage/
 # Nexus store (goals/reminders/watches), user memory + chat history.
 # Render free has ephemeral disk — back up via GET /api/backup.
 data/
+
+dev-dist/

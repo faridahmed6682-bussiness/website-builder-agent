@@ -50,7 +50,7 @@ import {
   getSystemLogs,
   clearSystemLogs
 } from './server/agent/apiOrchestrator.ts';
-import { startLiveSession, liveAction, liveInput, closeLiveSession, getLiveFrame } from './server/agent/browserWorker.ts';
+import { startLiveSession, liveAction, liveInput, closeLiveSession, getLiveFrame, setLiveSessionPaused } from './server/agent/browserWorker.ts';
 
 dotenv.config();
 
@@ -220,6 +220,13 @@ async function startServer() {
     try {
       const { sessionId, action, ...payload } = req.body || {};
       if (!sessionId || !action) return res.status(400).json({ success: false, error: 'sessionId and action are required' });
+      // 'pause'/'resume' are NOT worker /action verbs — they go through the
+      // worker's dedicated /pause endpoint (Take over / Give back to agent).
+      if (action === 'pause' || action === 'resume') {
+        const result = await setLiveSessionPaused(String(sessionId), action === 'pause');
+        res.json({ success: true, result: result ?? null });
+        return;
+      }
       const result = await liveAction(String(sessionId), String(action), payload);
       res.json({ success: true, result: result ?? null });
     } catch (err: any) {

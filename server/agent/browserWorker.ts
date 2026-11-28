@@ -58,6 +58,32 @@ async function workerFetch(
   }
 }
 
+/** Binary fetch for endpoints that return raw bytes (live frame JPEG). */
+async function workerFetchBinary(
+  cfg: WorkerConfig,
+  baseUrl: string,
+  path: string,
+  timeoutMs = 15000,
+): Promise<Buffer> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${baseUrl}${path}`, {
+      headers: { 'x-api-key': cfg.apiKey },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const err: any = new Error(`Browser worker HTTP ${res.status}: ${String(text).slice(0, 200)}`);
+      err.status = res.status;
+      throw err;
+    }
+    return Buffer.from(await res.arrayBuffer());
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** POST /api/browse {task, url?} — returns the worker's summary/result text. */
 export async function runBrowseTask(task: string, url?: string): Promise<string> {
   const cfg = getWorkerConfig();
@@ -230,7 +256,15 @@ export async function liveAction(
   }, 30000);
 }
 
-/** POST /api/live/:id/input — pointer/keyboard/type events for a live page. */
+/** POST /api/live/:id/input — pointer/keyboard/type events for a live page.
+ * Translates the Browser tab's event shapes to the worker's input shapes:
+ *   click  {x,y,button}        -> {type:'mouse', kind:'click', x, y, button}
+ *   scroll {x?,y?,deltaX,deltaY} -> {type:'mouse', kind:'wheel', x, y, deltaX, deltaY}
+ *   key    {key, kind?}        -> {type:'key', key, kind}
+ *   type   {text}              -> {type:'type', text} (keyboard.type on the
+ *                                   focused element; worker input supports it)
+ *   mouse  {...}               -> passed through as-is.
+ * Scroll without a point defaults to the viewport centre (683, 384). */
 export async function liveInput(
   sessionId: string,
   event: Record<string, any>,
@@ -238,9 +272,24 @@ export async function liveInput(
   const cfg = getWorkerConfig();
   if (!cfg) throw new Error('Browser worker is not configured (set BROWSER_WORKER_URL + BROWSER_WORKER_KEY).');
   if (!sessionId) throw new Error('liveInput needs a session id.');
+  const ev = event || {};
+  let out: Record<string, any>;
+  if (ev.type === 'click') {
+    out = { type: 'mouse', kind: 'click', x: Number(ev.x) || 0, y: Number(ev.y) || 0, button: ev.button || 'left', ...(ev.clickCount ? { clickCount: ev.clickCount } : {}) };
+  } else if (ev.type === 'scroll') {
+    out = { type: 'mouse', kind: 'wheel', x: Number(ev.x) || 683, y: Number(ev.y) || 384, deltaX: Number(ev.deltaX) || 0, deltaY: Number(ev.deltaY) || 0 };
+  } else if (ev.type === 'key') {
+    out = { type: 'key', key: ev.key, ...(ev.kind ? { kind: ev.kind } : {}) };
+  } else if (ev.type === 'type') {
+    out = { type: 'type', text: ev.text || '' };
+  } else if (ev.type === 'move') {
+    out = { type: 'mouse', kind: 'move', x: Number(ev.x) || 0, y: Number(ev.y) || 0 };
+  } else {
+    out = ev; // 'mouse'/'key' already in worker shape — pass through.
+  }
   return workerFetch(cfg, cfg.primaryUrl, `/api/live/${encodeURIComponent(sessionId)}/input`, {
     method: 'POST',
-    body: JSON.stringify(event),
+    body: JSON.stringify(out),
   }, 30000);
 }
 
@@ -256,23 +305,27 @@ export async function closeLiveSession(sessionId: string): Promise<boolean> {
   return true;
 }
 
-/** Pause/resume a live session (Take over / Give back to agent). */
+/** Pause/resume a live session (Take over / Give back to agent).
+ * Uses the worker's dedicated pause endpoint — the worker's /action
+ * switch does NOT accept 'pause'/'resume'. */
 export async function setLiveSessionPaused(sessionId: string, paused: boolean): Promise<any> {
-  return liveAction(sessionId, paused ? 'pause' : 'resume');
+  const cfg = getWorkerConfig();
+  if (!cfg) throw new Error('Browser worker is not configured (set BROWSER_WORKER_URL + BROWSER_WORKER_KEY).');
+  if (!sessionId) throw new Error('setLiveSessionPaused needs a session id.');
+  return workerFetch(cfg, cfg.primaryUrl, `/api/live/${encodeURIComponent(sessionId)}/pause`, {
+    method: 'POST',
+    body: JSON.stringify({ paused }),
+  }, 30000);
 }
 
-function normalizeFrame(body: any): { image: string; width?: number; height?: number } {
-  const raw = body?.jpegBase64 || body?.jpeg || body?.image || body?.frame || body?.data || '';
-  if (!raw) throw new Error('Browser worker returned no live frame.');
-  const image = String(raw).startsWith('data:') ? String(raw) : `data:image/jpeg;base64,${String(raw)}`;
-  return { image, width: body?.width, height: body?.height };
-}
-
-/** GET /api/live/:id/frame — one screencast frame (base64 JPEG). */
+/** GET /api/live/:id/frame — one screencast frame (base64 JPEG).
+ * The worker returns raw binary JPEG, so this fetches bytes (not JSON)
+ * and base64-encodes them here. */
 export async function getLiveFrame(sessionId: string): Promise<{ image: string; width?: number; height?: number }> {
   const cfg = getWorkerConfig();
   if (!cfg) throw new Error('Browser worker is not configured (set BROWSER_WORKER_URL + BROWSER_WORKER_KEY).');
   if (!sessionId) throw new Error('getLiveFrame needs a session id.');
-  const body = await workerFetch(cfg, cfg.primaryUrl, `/api/live/${encodeURIComponent(sessionId)}/frame`, {}, 15000);
-  return normalizeFrame(body);
+  const buf = await workerFetchBinary(cfg, cfg.primaryUrl, `/api/live/${encodeURIComponent(sessionId)}/frame`, 15000);
+  if (!buf.length) throw new Error('Browser worker returned no live frame.');
+  return { image: `data:image/jpeg;base64,${buf.toString('base64')}` };
 }

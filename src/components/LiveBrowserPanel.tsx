@@ -134,7 +134,18 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
 
   const handleWheel = (e: React.WheelEvent) => {
     if (!session?.id || userInputLocked) return;
-    void sendInput({ type: 'scroll', deltaX: Math.round(e.deltaX), deltaY: Math.round(e.deltaY) });
+    // Include the pointer position — the worker wheels at x/y.
+    const rect = frameWrapRef.current?.getBoundingClientRect();
+    const img = imgRef.current;
+    let x = 683;
+    let y = 384;
+    if (rect && img) {
+      const vw = frameSize?.w || img.naturalWidth || rect.width;
+      const vh = frameSize?.h || img.naturalHeight || rect.height;
+      x = Math.round(((e.clientX - rect.left) / rect.width) * vw);
+      y = Math.round(((e.clientY - rect.top) / rect.height) * vh);
+    }
+    void sendInput({ type: 'scroll', x, y, deltaX: Math.round(e.deltaX), deltaY: Math.round(e.deltaY) });
   };
 
   const handleGo = async () => {
