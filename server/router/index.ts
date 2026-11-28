@@ -304,8 +304,16 @@ export async function routeChatCompletion(req: RouterChatRequest): Promise<Route
     const provider = providerOfModel(model);
     const keysForModel = await listRouterKeys(provider);
     if (!keysForModel.length) continue;
+    // Parallel-build key pin: a worker's sticky key is tried FIRST for
+    // models of its provider, then the rest in normal order (deduped).
+    // Failover below is untouched — a 429 on the pinned key rotates to the
+    // next key, same model.
+    const pinKeyId = req.pinKeyId;
+    const orderedKeys = pinKeyId && keysForModel.some((k) => k.id === pinKeyId)
+      ? [keysForModel.find((k) => k.id === pinKeyId)!, ...keysForModel.filter((k) => k.id !== pinKeyId)]
+      : keysForModel;
     let modelUnavailable = false;
-    for (const key of keysForModel) {
+    for (const key of orderedKeys) {
       noteModelAttempt(model, key.id);
       try {
         const res = await callProvider(provider, model, req, key.key);

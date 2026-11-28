@@ -168,6 +168,13 @@ export interface ChatOnceOptions {
   maxTokens?: number;
   timeoutMs?: number;
   /**
+   * Parallel multi-agent build (2026-11-29): the router tries this key id
+   * FIRST for models of its provider (see RouterChatRequest.pinKeyId). The
+   * external FreeLLMAPI path ignores it — pinning only applies to the
+   * embedded router. Never a key value, only the key id.
+   */
+  pinKeyId?: string;
+  /**
    * FreeLLMAPI translates `reasoning_effort` into the provider's thinking
    * config (Gemini thinking_level). 'high' is the default knee; 'xhigh'
    * only for hard plans. If the router rejects the value (HTTP 400), the
@@ -207,6 +214,7 @@ export async function chatOnce(opts: ChatOnceOptions): Promise<{ text: string; m
       max_tokens: opts.maxTokens || 4000,
       reasoning_effort: opts.reasoningEffort,
       stream: false,
+      pinKeyId: opts.pinKeyId,
     });
     const text = await response.text();
     if (!response.ok) {

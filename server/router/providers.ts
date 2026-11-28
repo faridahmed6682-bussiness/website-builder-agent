@@ -23,6 +23,15 @@ export interface RouterChatRequest {
   stream?: boolean;
   max_tokens?: number;
   reasoning_effort?: string;
+  /**
+   * Parallel multi-agent build (2026-11-29): try this router key FIRST
+   * whenever a model of its provider is attempted. The pin only sets the
+   * first key tried — a 429 / failure still rotates to the next key on the
+   * same model through the existing failover below, and a key of another
+   * provider is simply ignored for that model. Never a key value, only the
+   * key id.
+   */
+  pinKeyId?: string;
 }
 
 const PROVIDER_ENDPOINTS: Record<RouterProvider, string> = {
