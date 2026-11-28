@@ -74,6 +74,7 @@ import { AskQuestionModal, PendingQuestionPrompt } from './components/AskQuestio
 import { SidebarDrawer } from './components/SidebarDrawer';
 import { GoogleAIStudioCoderView } from './components/GoogleAIStudioCoderView';
 import { getLocalKeys, restoreServerKeysFromLocal } from './lib/secretsManager';
+import { isStopRequest } from './lib/stopRequest';
 import { STATIC_TEMPLATES, type StaticTemplate } from './lib/templates';
 import { ActionStep } from './types/secrets';
 import { 
@@ -134,6 +135,15 @@ export default function App() {
   const [messages, setMessages] = useState<any[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  // Background job running under the current session (Jobs panel, or the
+  // agent's queue_job tool). The chat turn's isLoading is FALSE while a job
+  // runs, so without this the Send button shows ↑ with no way to stop the
+  // work still running on the server (live bug 2026-11-29: the Reviewer
+  // step kept spinning while the button showed Send). Polled like the
+  // Dashboard's Jobs tab (5 s); filtered to this session only, so another
+  // session's job never blocks this chat.
+  const [runningJob, setRunningJob] = useState<{ id: string; sessionId: string; status: string } | null>(null);
+  const runningJobRef = useRef<{ id: string; sessionId: string; status: string } | null>(null);
   // Step 11: applying a static template never calls a model — it only
   // POSTs the bundled template HTML to /api/tools/file-write.
   const [isApplyingTemplate, setIsApplyingTemplate] = useState(false);
@@ -331,6 +341,49 @@ export default function App() {
     };
   }, [isLoading]);
 
+  // Keep runningJob in sync for closures (stopCurrentTurn / handleSend read
+  // the ref so a stale render closure can never miss a running job).
+  useEffect(() => {
+    runningJobRef.current = runningJob;
+  }, [runningJob]);
+
+  // Poll the background-job list for a job running under the current
+  // session. Runs only while a session exists; a job is 'running' until
+  // the server reports it done/failed, so the Stop button stays a Stop
+  // button until the work has actually stopped (no optimistic clear —
+  // clearing early would let a new turn start while the old job still
+  // runs and clear its session cancel flag before the loop sees it).
+  useEffect(() => {
+    if (!currentSessionId) {
+      setRunningJob(null);
+      return;
+    }
+    let stopped = false;
+    const refresh = async () => {
+      try {
+        const r = await fetch('/api/jobs');
+        const d = await r.json();
+        if (stopped) return;
+        const job = (d.jobs || []).find(
+          (j: any) =>
+            j.sessionId === currentSessionId &&
+            (j.status === 'queued' || j.status === 'working')
+        );
+        setRunningJob(
+          job ? { id: job.id, sessionId: job.sessionId, status: job.status } : null
+        );
+      } catch {
+        // Network blip: keep the last known state; the next poll retries.
+      }
+    };
+    refresh();
+    const t = setInterval(refresh, 5000);
+    return () => {
+      stopped = true;
+      clearInterval(t);
+    };
+  }, [currentSessionId]);
+
   const formatDuration = (sec: number) => {
     if (sec < 60) return `${sec}s`;
     const m = Math.floor(sec / 60);
@@ -381,7 +434,10 @@ export default function App() {
   // Stop the running turn (Send button becomes Stop while loading; the
   // Browser tab's "Take over" calls this too). Aborts the SSE fetch AND
   // tells the server to cancel the turn, so the agent loop stops issuing
-  // tool calls at the next round boundary instead of running on.
+  // tool calls at the next round boundary instead of running on. Also
+  // cancels a background job running under this session — a job keeps
+  // running after the chat stream ends, so stopping the turn alone would
+  // leave it working with no way to stop it.
   const stopCurrentTurn = () => {
     chatAbortRef.current?.abort();
     chatAbortRef.current = null;
@@ -392,17 +448,58 @@ export default function App() {
         body: JSON.stringify({ sessionId: currentSessionId }),
       }).catch(() => {});
     }
+    const job = runningJobRef.current;
+    if (job) {
+      fetch(`/api/jobs/${job.id}/cancel`, { method: 'POST' }).catch(() => {});
+      // Do NOT clear runningJob here: the poll clears it only once the
+      // server reports the job done/failed, so the Stop button stays a
+      // Stop button (and no new turn starts) until the work has actually
+      // stopped.
+    }
     setActionLog('⏹ Stopped — you took over.');
   };
 
+  // True while ANY work is running for this session: a chat turn
+  // (isLoading) or a background job (runningJob). The Send button shows
+  // Stop and handleSend refuses new turns while this is true.
+  const isWorkRunning = isLoading || runningJob !== null;
+
+  // Stop intent in a chat message (Bengali + English) — see
+  // src/lib/stopRequest.ts. While work is running, a stop message cancels
+  // the work instead of starting a new turn.
+
+  // Append the stopped confirmation in the existing "⏹ Turn stopped."
+  // model-message style (same text the AbortError path uses), once only.
+  const appendStoppedNote = () => {
+    setMessages(prev => {
+      const last = prev[prev.length - 1];
+      if (
+        last?.role === 'model' &&
+        last.parts?.[0]?.text === '⏹ Turn stopped.'
+      ) {
+        return prev;
+      }
+      return [...prev, { role: 'model', parts: [{ text: '⏹ Turn stopped.' }], isFinished: true }];
+    });
+  };
+
   const handleSend = async (overrideText?: string | React.MouseEvent, options?: { bypassCache?: boolean }) => {
-    // The Send button turns into a Stop button while a turn is running.
-    if (isLoading || isSendingRef.current) {
+    const textToSend = typeof overrideText === 'string' ? overrideText : input;
+    const trimmed = (textToSend || '').trim();
+    // While work is running, a stop message is accepted and cancels the
+    // work instead of starting a new turn. A bare Send click also stops
+    // the work. Anything else is ignored — no parallel turn ever starts.
+    if (isLoading || isSendingRef.current || runningJobRef.current) {
+      if (isStopRequest(trimmed)) {
+        setInput('');
+        stopCurrentTurn();
+        appendStoppedNote();
+        return;
+      }
       if (typeof overrideText !== 'string') stopCurrentTurn();
       return;
     }
-    const textToSend = typeof overrideText === 'string' ? overrideText : input;
-    if (!textToSend.trim() || cooldown > 0) return;
+    if (!trimmed || cooldown > 0) return;
     isSendingRef.current = true;
 
     const userMessage: any = { role: 'user', parts: [{ text: textToSend }] };
@@ -682,7 +779,9 @@ export default function App() {
    * preview build), fall back to a local blob-URL preview of the same HTML.
    */
   const handleUseTemplate = async (template: StaticTemplate) => {
-    if (isLoading || isApplyingTemplate) return;
+    // Also blocked while a background job runs: applying a template
+    // writes files, and a running job may be writing the same project.
+    if (isLoading || isApplyingTemplate || runningJobRef.current) return;
     setIsApplyingTemplate(true);
     setError(null);
 
@@ -904,6 +1003,7 @@ export default function App() {
           liveBrowserSession={liveBrowserSession}
           onLiveBrowserSessionChange={setLiveBrowserSession}
           onStopTurn={stopCurrentTurn}
+          isBackgroundJobRunning={runningJob !== null}
           // Step 12 (P1): the preview iframe renders currentSessionHtml via
           // srcDoc, so a disk-only save would never show in preview — sync
           // the in-memory copy when the edited artifact is projects/index.html.
@@ -1485,13 +1585,21 @@ export default function App() {
                 onTranscript={(text) => setInput((prev) => (prev ? prev + ' ' + text : text))}
               />
               <div className="px-3">
-                <button 
+                {/* Same Stop behaviour as the coding view: while ANY work
+                    runs (chat turn or background job) this is a Stop
+                    button — clicking it stops the work and never sends
+                    the input text. It used to be merely disabled while
+                    loading, so a running job had no stop at all here. */}
+                <button
                   onClick={() => handleSend()}
-                  disabled={isLoading || !input.trim() || cooldown > 0}
+                  disabled={(!isWorkRunning && !input.trim()) || cooldown > 0}
                   className="p-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:hover:bg-indigo-600 rounded-xl transition-all shadow-lg shadow-indigo-600/20 flex items-center justify-center min-w-[44px]"
+                  title={isWorkRunning ? "Stop" : "Send"}
                 >
                   {cooldown > 0 ? (
                     <span className="text-xs font-bold text-white">{cooldown}s</span>
+                  ) : isWorkRunning ? (
+                    <Square className="w-5 h-5 text-white fill-current" />
                   ) : (
                     <Send className="w-5 h-5 text-white" />
                   )}

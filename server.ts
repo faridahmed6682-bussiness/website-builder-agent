@@ -1055,8 +1055,14 @@ service cloud.firestore {
     res.json(job);
   });
   app.post('/api/jobs/:id/cancel', async (req, res) => {
+    const job = await getJob(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found.' });
     const ok = await cancelJob(req.params.id);
-    if (!ok) return res.status(400).json({ error: 'Job cannot be cancelled (not queued).' });
+    if (!ok) return res.status(400).json({ error: 'Job cannot be cancelled (already finished).' });
+    // A 'working' job's turn loop checks the session cancel flag at every
+    // round boundary — set it so the run stops promptly instead of running
+    // on until its tool calls finish on their own.
+    cancelTurn(job.sessionId);
     res.json({ success: true });
   });
 
@@ -1553,6 +1559,23 @@ service cloud.firestore {
       let finished = false;
       const fakeRes: any = {
         setHeader() {},
+        // Stop fix (2026-11-29): handleOrchestratedChat registers
+        // res.on('finish') / res.on('close') (and res.once('close')
+        // elsewhere), but this fake Response had neither — so EVERY
+        // background job died instantly with "res.on is not a function"
+        // and no job ever ran. A job has no client connection, so these
+        // are recorded no-ops; end() fires 'finish' like a real Response
+        // so the orchestrator's heartbeat is cleared and a completed job
+        // is never marked cancelled by its own 'close'.
+        _handlers: {} as Record<string, Function[]>,
+        on(event: string, fn: Function) {
+          (this._handlers[event] ||= []).push(fn);
+          return this;
+        },
+        once(event: string, fn: Function) {
+          (this._handlers[event] ||= []).push(fn);
+          return this;
+        },
         write(chunk: string) {
           for (const line of String(chunk).split('\n')) {
             if (!line.startsWith('data: ')) continue;
@@ -1567,6 +1590,9 @@ service cloud.firestore {
         end() {
           if (finished) return;
           finished = true;
+          for (const fn of (this._handlers['finish'] || [])) {
+            try { fn(); } catch { /* ignore */ }
+          }
           // FIX (2026-11-27): a turn that ended with an error event (e.g.
           // every LLM key failed) used to resolve as "done" with the
           // meaningless summary "Job finished.". An errored turn is a

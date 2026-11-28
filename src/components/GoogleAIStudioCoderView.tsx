@@ -115,6 +115,11 @@ interface GoogleAIStudioCoderViewProps {
   onLiveBrowserSessionChange?: (session: { id: string; url?: string } | null) => void;
   // Stop the running agent turn (Stop button / Browser-tab "Take over").
   onStopTurn?: () => void;
+  // A background job running under this session (Jobs panel / queue_job).
+  // The chat turn's isLoading is false while a job runs, so the Send
+  // button must show Stop for this too — otherwise the work keeps running
+  // with no way to stop it (live bug 2026-11-29).
+  isBackgroundJobRunning?: boolean;
 }
 
 const STARTER_PROMPTS = [
@@ -213,7 +218,12 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
   liveBrowserSession = null,
   onLiveBrowserSessionChange,
   onStopTurn,
+  isBackgroundJobRunning = false,
 }) => {
+  // Busy = a chat turn is streaming OR a background job is running under
+  // this session. The Send button shows Stop for both; the streaming-only
+  // indicators below still use isLoading on its own.
+  const isBusy = isLoading || isBackgroundJobRunning;
   const [activeCoderTab, setActiveCoderTab] = useState<'chat' | 'preview' | 'artifacts' | 'browser'>('chat');
   const [isWorkingExpanded, setIsWorkingExpanded] = useState(false);
   const [executionDuration, setExecutionDuration] = useState<number>(0);
@@ -1058,21 +1068,23 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
                       <Mic className="w-4 h-4" />
                     </button>
 
-                    {/* Circular Send / Stop button */}
+                    {/* Circular Send / Stop button — Stop while ANY work
+                        runs (chat turn or background job); clicking it
+                        stops the work and never sends the input text. */}
                     <button
                       onClick={() => handleSend()}
-                      disabled={!isLoading && !input.trim()}
+                      disabled={!isBusy && !input.trim()}
                       className={cn(
                         "w-8 h-8 rounded-full flex items-center justify-center transition-all",
-                        isLoading
+                        isBusy
                           ? "bg-slate-800 text-white hover:bg-slate-700"
                           : input.trim()
                             ? "bg-white text-slate-900 hover:bg-slate-200 shadow-md cursor-pointer"
                             : "bg-slate-800 text-slate-500 cursor-not-allowed"
                       )}
-                      title={isLoading ? "Stop" : "Send"}
+                      title={isBusy ? "Stop" : "Send"}
                     >
-                      {isLoading ? (
+                      {isBusy ? (
                         <Square className="w-3.5 h-3.5 fill-current" />
                       ) : (
                         <ArrowUp className="w-4 h-4 stroke-[2.5]" />

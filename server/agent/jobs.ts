@@ -32,6 +32,12 @@ export interface Job {
   previewUrl?: string;
   error?: string;
   note?: string;
+  // Stop support (2026-11-29): the user must be able to stop a RUNNING
+  // job, not just a queued one. cancelJob() sets this flag on a 'working'
+  // job; the job's turn loop also gets the session cancel flag (see the
+  // /api/jobs/:id/cancel route), so the loop stops at its next round
+  // boundary, and pump() marks the job 'failed' instead of 'done' below.
+  cancelRequested?: boolean;
 }
 
 export type JobRunner = (job: Job) => Promise<{ summary: string; previewUrl?: string }>;
@@ -40,19 +46,38 @@ let jobs: Job[] = [];
 let jobsLoaded = false;
 let workerRunning = false;
 let runner: JobRunner | null = null;
+// Stop fix (2026-11-29): loadJobs used to set jobsLoaded = true BEFORE the
+// async file read finished, so a concurrent caller (e.g. startJobWorker's
+// pump racing a createJob at server startup) proceeded with a stale array
+// and the late `jobs = []` reassignment silently discarded the just-created
+// job — the job vanished from the list (and could never be stopped or
+// tracked). All callers now await one shared load promise.
+let jobsLoadPromise: Promise<void> | null = null;
 
 async function loadJobs(): Promise<void> {
   if (jobsLoaded) return;
-  jobsLoaded = true;
+  if (!jobsLoadPromise) jobsLoadPromise = doLoadJobs();
+  await jobsLoadPromise;
+}
+
+async function doLoadJobs(): Promise<void> {
   try {
     const raw = await fs.readFile(JOBS_FILE, 'utf-8');
     jobs = JSON.parse(raw) as Job[];
-    // Jobs stuck in 'working' were interrupted by a restart — re-queue them.
+    // Jobs stuck in 'working' were interrupted by a restart — re-queue them,
+    // unless the user had asked to stop them: a cancelled job stays
+    // cancelled instead of silently restarting.
     let changed = false;
     for (const j of jobs) {
       if (j.status === 'working') {
-        j.status = 'queued';
-        j.note = 'Interrupted by a server restart — re-queued.';
+        if (j.cancelRequested) {
+          j.status = 'failed';
+          j.error = 'Cancelled by the user.';
+          j.finishedAt = Date.now();
+        } else {
+          j.status = 'queued';
+          j.note = 'Interrupted by a server restart — re-queued.';
+        }
         changed = true;
       }
     }
@@ -60,6 +85,7 @@ async function loadJobs(): Promise<void> {
   } catch {
     jobs = [];
   }
+  jobsLoaded = true;
 }
 
 async function saveJobs(): Promise<void> {
@@ -96,10 +122,20 @@ export async function getJob(id: string): Promise<Job | null> {
 export async function cancelJob(id: string): Promise<boolean> {
   await loadJobs();
   const job = jobs.find((j) => j.id === id);
-  if (!job || job.status !== 'queued') return false;
-  job.status = 'failed';
-  job.error = 'Cancelled by the user.';
-  job.finishedAt = Date.now();
+  if (!job || job.status === 'done' || job.status === 'failed') return false;
+  if (job.status === 'queued') {
+    job.status = 'failed';
+    job.error = 'Cancelled by the user.';
+    job.finishedAt = Date.now();
+    await saveJobs();
+    return true;
+  }
+  // 'working' jobs used to be un-cancellable (only 'queued' could stop),
+  // so a running build had no stop at all. Flag it instead: the cancel
+  // route also sets the session cancel flag so the turn loop stops at its
+  // next round boundary, and pump() below marks the job 'failed' rather
+  // than 'done' once the runner settles.
+  job.cancelRequested = true;
   await saveJobs();
   return true;
 }
@@ -124,12 +160,23 @@ async function pump(): Promise<void> {
       await saveJobs();
       try {
         const result = await runner(job);
-        job.status = 'done';
-        job.summary = result.summary;
-        job.previewUrl = result.previewUrl;
+        if (job.cancelRequested) {
+          // The user stopped this job while it ran: it is a cancellation,
+          // not a successful finish — even if the runner's turn resolved.
+          job.status = 'failed';
+          job.error = 'Cancelled by the user.';
+          job.summary = undefined;
+          job.previewUrl = undefined;
+        } else {
+          job.status = 'done';
+          job.summary = result.summary;
+          job.previewUrl = result.previewUrl;
+        }
       } catch (err: any) {
         job.status = 'failed';
-        job.error = String(err?.message || err || 'Job failed').slice(0, 500);
+        job.error = job.cancelRequested
+          ? 'Cancelled by the user.'
+          : String(err?.message || err || 'Job failed').slice(0, 500);
       }
       job.finishedAt = Date.now();
       await saveJobs();
