@@ -225,6 +225,14 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
   // indicators below still use isLoading on its own.
   const isBusy = isLoading || isBackgroundJobRunning;
   const [activeCoderTab, setActiveCoderTab] = useState<'chat' | 'preview' | 'artifacts' | 'browser'>('chat');
+  // Inline mini-browser (in-chat): a compact panel above the input showing
+  // the SAME live session as the full Browser tab — the user watches the
+  // agent work without leaving the chat. Only one view renders at a time,
+  // so the session is never duplicated.
+  const [miniBrowserOpen, setMiniBrowserOpen] = useState(false);
+  // Last session id the auto-open effect already handled, so re-renders
+  // and tab switches never re-open a mini panel the user collapsed.
+  const lastAutoOpenedSessionRef = useRef<string | null>(null);
   const [isWorkingExpanded, setIsWorkingExpanded] = useState(false);
   const [executionDuration, setExecutionDuration] = useState<number>(0);
   const [lastRunDuration, setLastRunDuration] = useState<number>(156);
@@ -253,12 +261,23 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
     setPreviewErrors([]);
   }, [previewKey, currentSessionId]);
 
-  // Live Browser tab: when the agent opens a live session, switch to it
-  // so the user sees the page the agent is driving.
+  // Live Browser: when the agent opens a live session, show it where the
+  // user already is — as the inline mini panel if they are in chat (stay
+  // in chat, no tab yank), otherwise switch to the full Browser tab so
+  // the session is still visible. Collapsing the mini panel is respected:
+  // the same session id never re-opens it.
   const liveSessionId = liveBrowserSession?.id ?? null;
   useEffect(() => {
-    if (liveSessionId) setActiveCoderTab('browser');
-  }, [liveSessionId]);
+    if (!liveSessionId) {
+      lastAutoOpenedSessionRef.current = null;
+      setMiniBrowserOpen(false);
+      return;
+    }
+    if (lastAutoOpenedSessionRef.current === liveSessionId) return;
+    lastAutoOpenedSessionRef.current = liveSessionId;
+    if (activeCoderTab === 'chat') setMiniBrowserOpen(true);
+    else setActiveCoderTab('browser');
+  }, [liveSessionId, activeCoderTab]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -895,6 +914,43 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
 
               <div ref={messagesEndRef} />
             </div>
+
+            {/* Inline mini-browser: the shared live session, small, inside
+                the chat — watch the agent work without leaving the chat.
+                Docked above the input so the input is never crowded. */}
+            {liveBrowserSession && miniBrowserOpen && (
+              <div className="px-3 sm:px-4 pt-2 pb-1 bg-[#131314] flex-shrink-0">
+                <div className="max-w-2xl mx-auto">
+                  <LiveBrowserPanel
+                    variant="mini"
+                    session={liveBrowserSession}
+                    onSessionChange={(s) => onLiveBrowserSessionChange?.(s)}
+                    onTakeOver={() => onStopTurn?.()}
+                    isAgentRunning={isLoading}
+                    onExpand={() => setActiveCoderTab('browser')}
+                    onCollapse={() => setMiniBrowserOpen(false)}
+                  />
+                </div>
+              </div>
+            )}
+            {liveBrowserSession && !miniBrowserOpen && (
+              <div className="px-3 sm:px-4 pt-2 pb-1 bg-[#131314] flex-shrink-0">
+                <div className="max-w-2xl mx-auto">
+                  <button
+                    onClick={() => setMiniBrowserOpen(true)}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-[#1e2024] hover:bg-[#25272c] border border-slate-800 text-xs text-slate-300 transition-colors cursor-pointer"
+                    title="Show the live browser inside the chat"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+                    <Globe className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
+                    <span className="flex-1 min-w-0 truncate text-left">
+                      Live browser{liveBrowserSession.url ? `: ${liveBrowserSession.url}` : ''}
+                    </span>
+                    <span className="text-indigo-300 font-semibold flex-shrink-0">Show</span>
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Input Card Container matching screenshot */}
             <div className="px-4 py-3 bg-[#131314] flex-shrink-0">

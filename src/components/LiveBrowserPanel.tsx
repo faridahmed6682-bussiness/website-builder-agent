@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Globe, Hand, Bot, X, RefreshCw, AlertTriangle, MousePointerClick, Keyboard } from 'lucide-react';
+import { Globe, Hand, Bot, X, RefreshCw, AlertTriangle, MousePointerClick, Keyboard, Maximize2, ChevronDown } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export interface LiveBrowserSession {
@@ -15,6 +15,12 @@ interface LiveBrowserPanelProps {
   onTakeOver: () => void;
   /** True while an agent turn is running (Send/Stop state). */
   isAgentRunning: boolean;
+  /** 'full' = the Browser tab; 'mini' = compact inline panel inside chat. */
+  variant?: 'full' | 'mini';
+  /** Mini only: open the full Browser tab (same session). */
+  onExpand?: () => void;
+  /** Mini only: hide the mini panel (the session keeps running). */
+  onCollapse?: () => void;
 }
 
 type StreamStatus = 'idle' | 'connecting' | 'live' | 'error';
@@ -43,6 +49,9 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
   onSessionChange,
   onTakeOver,
   isAgentRunning,
+  variant = 'full',
+  onExpand,
+  onCollapse,
 }) => {
   const [frame, setFrame] = useState<string | null>(null);
   const [frameSize, setFrameSize] = useState<{ w: number; h: number } | null>(null);
@@ -213,6 +222,116 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
     await sendInput({ type: 'type', text: typeText });
     setTypeText('');
   };
+
+  // --- MINI variant: compact inline panel inside the chat view. Same
+  // session, same SSE stream, same input handlers as the full tab — only
+  // the layout is smaller. Only one variant is ever mounted at a time
+  // (chat tab renders mini, Browser tab renders full), so the stream is
+  // never duplicated and opening the mini panel never starts a second
+  // session. Fixed small height so the chat input is never crowded.
+  if (variant === 'mini') {
+    return (
+      <div className="bg-[#0b0e14] border border-slate-800 rounded-2xl overflow-hidden">
+        {/* Compact header: status + URL + takeover + expand/collapse/close */}
+        <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-slate-800">
+          <span className={cn(
+            "w-1.5 h-1.5 rounded-full flex-shrink-0",
+            status === 'live' ? "bg-emerald-400 animate-pulse" :
+            status === 'error' ? "bg-rose-400" : "bg-slate-400 animate-pulse"
+          )} />
+          <span className="flex-1 min-w-0 truncate text-[11px] text-slate-300" title={session?.url}>
+            {session?.url || 'Live browser'}
+          </span>
+          <span className="text-[10px] text-slate-500 flex-shrink-0 hidden sm:inline">
+            {status === 'live' ? (takenOver ? 'You are driving' : 'Live')
+              : status === 'error' ? 'Stream error' : 'Connecting…'}
+          </span>
+          {session && !takenOver && (
+            <button
+              onClick={() => void handleTakeOver()}
+              disabled={busy}
+              className="px-2 py-1 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black rounded-md text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer flex-shrink-0"
+              title="Pause the agent and drive the browser yourself"
+            >
+              <Hand className="w-3 h-3" />
+              <span className="hidden sm:inline">Take over</span>
+            </button>
+          )}
+          {session && takenOver && (
+            <button
+              onClick={() => void handleGiveBack()}
+              disabled={busy}
+              className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-md text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer flex-shrink-0"
+              title="Resume the session so the agent can drive it again"
+            >
+              <Bot className="w-3 h-3" />
+              <span className="hidden sm:inline">Give back</span>
+            </button>
+          )}
+          <button
+            onClick={() => onExpand?.()}
+            className="p-1 text-slate-400 hover:text-white rounded-md transition-colors cursor-pointer flex-shrink-0"
+            title="Open the full Browser tab (same session)"
+          >
+            <Maximize2 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => onCollapse?.()}
+            className="p-1 text-slate-400 hover:text-white rounded-md transition-colors cursor-pointer flex-shrink-0"
+            title="Hide the mini browser — the session keeps running, chat stays as is"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+          </button>
+          {session && (
+            <button
+              onClick={() => void handleClose()}
+              className="p-1 text-slate-400 hover:text-white rounded-md transition-colors cursor-pointer flex-shrink-0"
+              title="Close live session"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        {/* Compact screencast — fixed small height, same click/key/wheel input */}
+        <div
+          ref={frameWrapRef}
+          tabIndex={0}
+          onMouseDown={handleFrameMouseDown}
+          onKeyDown={handleFrameKeyDown}
+          onWheel={handleWheel}
+          onContextMenu={(e) => e.preventDefault()}
+          className="h-44 sm:h-56 flex items-center justify-center overflow-hidden outline-none focus:ring-1 focus:ring-indigo-500/50"
+          title={session ? (takenOver ? 'You are driving — click / type to control the page' : 'Agent is driving — click Take over to drive it yourself') : 'No live browser session'}
+        >
+          {!session && (
+            <p className="text-slate-500 text-xs px-4 text-center">No live browser session yet.</p>
+          )}
+          {session && status === 'connecting' && !frame && (
+            <div className="text-center">
+              <RefreshCw className="w-5 h-5 text-slate-500 mx-auto mb-1 animate-spin" />
+              <p className="text-slate-400 text-[11px]">Connecting…</p>
+            </div>
+          )}
+          {session && status === 'error' && !frame && (
+            <div className="text-center px-4">
+              <AlertTriangle className="w-6 h-6 text-rose-400 mx-auto mb-1" />
+              <p className="text-slate-500 text-[11px]">{errorMsg || 'Live stream unavailable.'}</p>
+            </div>
+          )}
+          {frame && (
+            <img
+              ref={imgRef}
+              src={frame}
+              alt="Live browser"
+              draggable={false}
+              className="max-w-full max-h-full object-contain select-none"
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-[#0b0e14]">
