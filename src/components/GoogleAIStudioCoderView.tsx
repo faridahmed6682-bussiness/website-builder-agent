@@ -109,10 +109,12 @@ interface GoogleAIStudioCoderViewProps {
   // parent can sync any in-memory copy (e.g. currentSessionHtml, which the
   // preview iframe renders via srcDoc) with the edited content.
   onArtifactSaved?: (filePath: string, content: string) => void;
-  // Live Browser tab: the shared live session the agent opened (or the
-  // user started from the tab itself). Null = no session yet.
-  liveBrowserSession?: { id: string; url?: string } | null;
-  onLiveBrowserSessionChange?: (session: { id: string; url?: string } | null) => void;
+  // Live Browser tab: the live tabs open in the panel (max 4 — the worker
+  // pool cap). Empty = no session yet. The active id is the visible tab.
+  liveBrowserTabs?: Array<{ id: string; url?: string }>;
+  activeLiveBrowserTabId?: string | null;
+  onLiveBrowserTabsChange?: (tabs: Array<{ id: string; url?: string }>) => void;
+  onActiveLiveBrowserTabChange?: (id: string | null) => void;
   // Stop the running agent turn (Stop button / Browser-tab "Take over").
   onStopTurn?: () => void;
   // A background job running under this session (Jobs panel / queue_job).
@@ -215,8 +217,10 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
   teamStatuses = [],
   onAnalyzeError,
   onArtifactSaved,
-  liveBrowserSession = null,
-  onLiveBrowserSessionChange,
+  liveBrowserTabs = [],
+  activeLiveBrowserTabId = null,
+  onLiveBrowserTabsChange,
+  onActiveLiveBrowserTabChange,
   onStopTurn,
   isBackgroundJobRunning = false,
 }) => {
@@ -261,23 +265,24 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
     setPreviewErrors([]);
   }, [previewKey, currentSessionId]);
 
-  // Live Browser: when the agent opens a live session, show it where the
-  // user already is — as the inline mini panel if they are in chat (stay
-  // in chat, no tab yank), otherwise switch to the full Browser tab so
-  // the session is still visible. Collapsing the mini panel is respected:
-  // the same session id never re-opens it.
-  const liveSessionId = liveBrowserSession?.id ?? null;
+  // Live Browser: when the agent opens a live tab (or the active tab
+  // changes), show it where the user already is — as the inline mini
+  // panel if they are in chat (stay in chat, no tab yank), otherwise
+  // switch to the full Browser tab so the tab is still visible.
+  // Collapsing the mini panel is respected: the same tab id never
+  // re-opens it.
+  const activeLiveBrowserTab = liveBrowserTabs.find((t) => t.id === activeLiveBrowserTabId) ?? null;
   useEffect(() => {
-    if (!liveSessionId) {
+    if (!activeLiveBrowserTabId) {
       lastAutoOpenedSessionRef.current = null;
       setMiniBrowserOpen(false);
       return;
     }
-    if (lastAutoOpenedSessionRef.current === liveSessionId) return;
-    lastAutoOpenedSessionRef.current = liveSessionId;
+    if (lastAutoOpenedSessionRef.current === activeLiveBrowserTabId) return;
+    lastAutoOpenedSessionRef.current = activeLiveBrowserTabId;
     if (activeCoderTab === 'chat') setMiniBrowserOpen(true);
     else setActiveCoderTab('browser');
-  }, [liveSessionId, activeCoderTab]);
+  }, [activeLiveBrowserTabId, activeCoderTab]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -915,16 +920,18 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Inline mini-browser: the shared live session, small, inside
+            {/* Inline mini-browser: the active live tab, small, inside
                 the chat — watch the agent work without leaving the chat.
                 Docked above the input so the input is never crowded. */}
-            {liveBrowserSession && miniBrowserOpen && (
+            {activeLiveBrowserTab && miniBrowserOpen && (
               <div className="px-3 sm:px-4 pt-2 pb-1 bg-[#131314] flex-shrink-0">
                 <div className="max-w-2xl mx-auto">
                   <LiveBrowserPanel
                     variant="mini"
-                    session={liveBrowserSession}
-                    onSessionChange={(s) => onLiveBrowserSessionChange?.(s)}
+                    tabs={liveBrowserTabs}
+                    activeTabId={activeLiveBrowserTabId}
+                    onTabsChange={(t) => onLiveBrowserTabsChange?.(t)}
+                    onActiveTabChange={(id) => onActiveLiveBrowserTabChange?.(id)}
                     onTakeOver={() => onStopTurn?.()}
                     isAgentRunning={isLoading}
                     onExpand={() => setActiveCoderTab('browser')}
@@ -933,7 +940,7 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
                 </div>
               </div>
             )}
-            {liveBrowserSession && !miniBrowserOpen && (
+            {activeLiveBrowserTab && !miniBrowserOpen && (
               <div className="px-3 sm:px-4 pt-2 pb-1 bg-[#131314] flex-shrink-0">
                 <div className="max-w-2xl mx-auto">
                   <button
@@ -944,7 +951,7 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
                     <Globe className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
                     <span className="flex-1 min-w-0 truncate text-left">
-                      Live browser{liveBrowserSession.url ? `: ${liveBrowserSession.url}` : ''}
+                      Live browser{activeLiveBrowserTab.url ? `: ${activeLiveBrowserTab.url}` : ''}{liveBrowserTabs.length > 1 ? ` · ${liveBrowserTabs.length} tabs` : ''}
                     </span>
                     <span className="text-indigo-300 font-semibold flex-shrink-0">Show</span>
                   </button>
@@ -1510,8 +1517,10 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
 
         {activeCoderTab === 'browser' && (
           <LiveBrowserPanel
-            session={liveBrowserSession}
-            onSessionChange={(s) => onLiveBrowserSessionChange?.(s)}
+            tabs={liveBrowserTabs}
+            activeTabId={activeLiveBrowserTabId}
+            onTabsChange={(t) => onLiveBrowserTabsChange?.(t)}
+            onActiveTabChange={(id) => onActiveLiveBrowserTabChange?.(id)}
             onTakeOver={() => onStopTurn?.()}
             isAgentRunning={isLoading}
           />
@@ -1586,8 +1595,8 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
           >
             <Globe className="w-3.5 h-3.5" />
             <span>Browser</span>
-            {liveBrowserSession ? (
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" title="Live browser session active" />
+            {liveBrowserTabs.length > 0 ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" title={`${liveBrowserTabs.length} live browser tab(s) open`} />
             ) : null}
           </button>
         </div>

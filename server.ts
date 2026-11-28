@@ -50,7 +50,7 @@ import {
   getSystemLogs,
   clearSystemLogs
 } from './server/agent/apiOrchestrator.ts';
-import { startLiveSession, liveAction, liveInput, closeLiveSession, getLiveFrame, setLiveSessionPaused } from './server/agent/browserWorker.ts';
+import { startLiveSession, liveAction, liveInput, closeLiveSession, getLiveFrame, setLiveSessionPaused, isPoolFullError } from './server/agent/browserWorker.ts';
 
 dotenv.config();
 
@@ -212,6 +212,12 @@ async function startServer() {
       );
       res.json({ success: true, sessionId: session.id, url: session.url, width: session.width, height: session.height });
     } catch (err: any) {
+      // Pool full (a 5th tab has no context): a clean 429 the Browser tab
+      // turns into "close a tab first" instead of a bare worker error.
+      if (isPoolFullError(err)) {
+        res.status(429).json({ success: false, poolFull: true, error: 'The live browser already has 4 tabs open — close a tab first, then try again.' });
+        return;
+      }
       res.status(502).json({ success: false, error: err.message || 'Failed to start a live browser session' });
     }
   });

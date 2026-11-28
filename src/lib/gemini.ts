@@ -46,6 +46,11 @@ export interface ChatAIOptions {
   signal?: AbortSignal;
   /** Fired when an agent tool opens/uses a shared live browser session. */
   onLiveBrowser?: (info: { sessionId: string; url?: string }) => void;
+  /** Live browser tabs open in the Browser tab (max 4) — sent with the
+   * turn so the agent can drive tabs the user opened, not only its own. */
+  liveTabs?: Array<{ id: string; url?: string }>;
+  /** Which of liveTabs is the active (visible) one in the Browser tab. */
+  activeLiveTabId?: string;
 }
 
 export async function chatWithAI(
@@ -94,6 +99,10 @@ export async function chatWithAI(
       imageBase64: options?.imageBase64,
       imageMime: options?.imageMime,
       bypassCache: options?.bypassCache,
+      // Live browser tabs (max 4): seed the turn so the agent can drive
+      // tabs the user opened in the Browser tab.
+      liveTabs: options?.liveTabs,
+      activeLiveTabId: options?.activeLiveTabId,
     }),
   });
 

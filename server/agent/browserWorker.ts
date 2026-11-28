@@ -84,6 +84,23 @@ async function workerFetchBinary(
   }
 }
 
+/** The worker pool holds 4 browser contexts total. When it is full, the
+ * worker refuses with 429 + a BN+EN message ("4 browsers already running").
+ * That message reaches the site through workerFetch (err.status = 429). */
+export function isPoolFullError(err: any): boolean {
+  const msg = String(err?.message || '');
+  return err?.status === 429 && /4 browsers already running|already running/i.test(msg);
+}
+
+/** Pool-full errors get one actionable line appended: the 4-context pool is
+ * full because live browser tabs are open — close one first, then retry. */
+export function withPoolFullHint(err: any): Error {
+  if (!isPoolFullError(err)) return err instanceof Error ? err : new Error(String(err));
+  const e: any = new Error(`${err.message} — the 4-context pool is full because live browser tabs are open; close a live tab in the Browser tab first, then retry.`);
+  e.status = err.status;
+  return e;
+}
+
 /** POST /api/browse {task, url?} — returns the worker's summary/result text. */
 export async function runBrowseTask(task: string, url?: string): Promise<string> {
   const cfg = getWorkerConfig();
@@ -131,10 +148,17 @@ export async function runBrowseJob(input: BrowseJobInput, opts?: { preferSeconda
   if (!input.url) throw new Error('browse_job requires a url.');
   const base = opts?.preferSecondary && cfg.secondaryUrl ? cfg.secondaryUrl : cfg.primaryUrl;
   // Flat top-level JSON body — never wrapped in `params`.
-  const created = await workerFetch(cfg, base, '/api/job', {
-    method: 'POST',
-    body: JSON.stringify({ type: input.type || 'read', ...input }),
-  }, 30000);
+  let created: any;
+  try {
+    created = await workerFetch(cfg, base, '/api/job', {
+      method: 'POST',
+      body: JSON.stringify({ type: input.type || 'read', ...input }),
+    }, 30000);
+  } catch (err: any) {
+    // Pool full (4 live tabs open): surface the close-a-tab guidance
+    // instead of a bare worker 429 — the job needs a free context.
+    throw withPoolFullHint(err);
+  }
   const jobId = created?.jobId || created?.id || '';
   if (!jobId) throw new Error('Browser worker did not return a job id.');
   const deadline = Date.now() + 10 * 60 * 1000;
@@ -171,10 +195,17 @@ export async function runBrowseJob(input: BrowseJobInput, opts?: { preferSeconda
 export async function getScreenshot(url: string, selector?: string): Promise<{ jpegBase64: string; width?: number; height?: number }> {
   const cfg = getWorkerConfig();
   if (!cfg) throw new Error('Browser worker is not configured (set BROWSER_WORKER_URL + BROWSER_WORKER_KEY).');
-  const body = await workerFetch(cfg, cfg.primaryUrl, '/api/screenshot', {
-    method: 'POST',
-    body: JSON.stringify({ url, ...(selector ? { selector } : {}) }),
-  }, 60000);
+  let body: any;
+  try {
+    body = await workerFetch(cfg, cfg.primaryUrl, '/api/screenshot', {
+      method: 'POST',
+      body: JSON.stringify({ url, ...(selector ? { selector } : {}) }),
+    }, 60000);
+  } catch (err: any) {
+    // Pool full (4 live tabs open): the screenshot needs a free context —
+    // tell the caller to close a live tab first.
+    throw withPoolFullHint(err);
+  }
   const jpegBase64 = body?.jpegBase64 || body?.jpeg || body?.image || '';
   if (!jpegBase64) throw new Error('Browser worker returned no screenshot (the worker may not expose /api/screenshot).');
   return { jpegBase64, width: body?.width, height: body?.height };
@@ -228,14 +259,21 @@ export async function startLiveSession(
 ): Promise<LiveSessionInfo> {
   const cfg = getWorkerConfig();
   if (!cfg) throw new Error('Browser worker is not configured (set BROWSER_WORKER_URL + BROWSER_WORKER_KEY).');
-  const body = await workerFetch(cfg, cfg.primaryUrl, '/api/live/start', {
-    method: 'POST',
-    body: JSON.stringify({
-      ...(url ? { url } : {}),
-      ...(opts?.width ? { width: opts.width } : {}),
-      ...(opts?.height ? { height: opts.height } : {}),
-    }),
-  }, 30000);
+  let body: any;
+  try {
+    body = await workerFetch(cfg, cfg.primaryUrl, '/api/live/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(url ? { url } : {}),
+        ...(opts?.width ? { width: opts.width } : {}),
+        ...(opts?.height ? { height: opts.height } : {}),
+      }),
+    }, 30000);
+  } catch (err: any) {
+    // Pool full: a 5th tab has no context — the caller turns this into
+    // the "close a tab first" message for the user/agent.
+    throw withPoolFullHint(err);
+  }
   const id = body?.sessionId || body?.id || '';
   if (!id) throw new Error('Browser worker did not return a live session id.');
   return { id, url: body?.url || url, width: body?.width, height: body?.height, paused: Boolean(body?.paused) };

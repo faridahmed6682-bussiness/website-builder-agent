@@ -13,7 +13,7 @@ import { Octokit } from 'octokit';
 import AdmZip from 'adm-zip';
 import { pushFilesToGitHub, ensureRepo, getGitHubLogin, resolveGitHubToken, sanitizeRepoPath } from './githubPush.ts';
 import { getGitHubConnection } from './githubAuth.ts';
-import { runBrowseTask, runBrowseJob, getScreenshot, resumeBrowseJob, isWorkerConfigured, startLiveSession, liveAction, liveInput, getLiveFrame } from './browserWorker.ts';
+import { runBrowseTask, runBrowseJob, getScreenshot, resumeBrowseJob, isWorkerConfigured, startLiveSession, liveAction, liveInput, getLiveFrame, isPoolFullError } from './browserWorker.ts';
 import { chatOnce, codingChain } from './llmClient.ts';
 import { verifyLive } from './modelChain.ts';
 import { loadStore, saveStoreSoon, newId, startNexusScheduler, onReminder, onWatchHit, type VectorEntry } from './nexusStore.ts';
@@ -732,39 +732,50 @@ export const nexusTools: FunctionDeclaration[] = [
   },
   {
     name: 'browser_goto',
-    description: 'Open a URL in the shared live browser page (starts a live session on first use in a turn; later calls in the same turn reuse it). The user watches the same page live in the Browser tab, so narrate what you are doing there. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
+    description: 'Open a URL in the live browser. First call in a turn starts live tab 1; later calls navigate the ACTIVE tab — unless new_tab is true, which opens a NEW tab (max 4 tabs at once; the worker pool holds 4). You drive ONE tab at a time: act on a tab, then the next (round-robin), never two at once. The user watches the same tabs live in the Browser tab, so narrate what you are doing there. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
     parameters: { type: Type.OBJECT, properties: {
       url: S('URL to open in the live browser (required).'),
+      new_tab: B('Open a NEW live tab instead of navigating the current one (default false).'),
     }, required: ['url'] },
   },
   {
     name: 'browser_click',
-    description: 'Click in the shared live browser page (browser_goto first). Coordinates are CSS pixels in the page viewport; pass a selector instead when the element is easier to name than to point at. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
+    description: 'Click in a live browser tab (browser_goto first). Coordinates are CSS pixels in the page viewport; pass a selector instead when the element is easier to name than to point at. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
     parameters: { type: Type.OBJECT, properties: {
       x: I('Viewport x coordinate in CSS pixels.'),
       y: I('Viewport y coordinate in CSS pixels.'),
       selector: S('Optional CSS selector to click instead of coordinates.'),
       button: S('Mouse button: left (default) | right | middle.'),
+      tab: S('Which live tab: its number (1-4, e.g. "2") or its session id. Omit for the active tab.'),
     }, required: [] },
   },
   {
     name: 'browser_type',
-    description: 'Type text into the shared live browser page (browser_goto first) — focuses the selector first when given, otherwise types into the currently focused field. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
+    description: 'Type text into a live browser tab (browser_goto first) — focuses the selector first when given, otherwise types into the currently focused field. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
     parameters: { type: Type.OBJECT, properties: {
       text: S('Text to type.'),
       selector: S('Optional CSS selector of the field to type into.'),
+      tab: S('Which live tab: its number (1-4, e.g. "2") or its session id. Omit for the active tab.'),
     }, required: ['text'] },
   },
   {
     name: 'browser_press_key',
-    description: 'Press a key in the shared live browser page (browser_goto first): Enter, Tab, Escape, ArrowDown, ArrowUp, PageDown, Backspace, etc. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
+    description: 'Press a key in a live browser tab (browser_goto first): Enter, Tab, Escape, ArrowDown, ArrowUp, PageDown, Backspace, etc. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
     parameters: { type: Type.OBJECT, properties: {
       key: S('Key name, e.g. "Enter", "Tab", "Escape", "ArrowDown".'),
+      tab: S('Which live tab: its number (1-4, e.g. "2") or its session id. Omit for the active tab.'),
     }, required: ['key'] },
   },
   {
     name: 'browser_screenshot',
-    description: 'Capture the current frame of the shared live browser page (browser_goto first). The frame is shown to the user in the Browser tab; the result confirms the capture and its size. For a vision answer about a page, use browse_vision instead. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
+    description: 'Capture the current frame of a live browser tab (browser_goto first). The frame is shown to the user in the Browser tab; the result confirms the capture and its size. For a vision answer about a page, use browse_vision instead. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
+    parameters: { type: Type.OBJECT, properties: {
+      tab: S('Which live tab: its number (1-4, e.g. "2") or its session id. Omit for the active tab.'),
+    }, required: [] },
+  },
+  {
+    name: 'browser_list_tabs',
+    description: 'List the live browser tabs open in this turn (number, URL, which is active). Use it before acting on a tab the user opened in the Browser tab, or when you have lost track of which tabs are open. Max 4 tabs at once.',
     parameters: { type: Type.OBJECT, properties: {}, required: [] },
   },
   {
@@ -1621,89 +1632,155 @@ async function execBrowseResume(args: any): Promise<any> {
 }
 
 // ---------------------------------------------------------------------------
-// Live browser tools — one shared page per turn (execCtx.liveSessionId).
-// The same session is what the user's Browser tab watches; the frontend
-// learns the session id from the tool result (liveSessionId) via the
-// orchestrator's `live_browser` SSE event.
+// Live browser tools — up to 4 live tabs per turn (execCtx.liveSessions),
+// one per worker context (the pool cap). The same sessions are what the
+// user's Browser tab watches; the frontend learns session ids from the
+// tool results (liveSessionId) via the orchestrator's `live_browser` SSE
+// event. The agent drives ONE tab at a time — it acts on a tab, then the
+// next (round-robin), never literally two at once.
 // ---------------------------------------------------------------------------
-type LiveExecCtx = { sessionId?: string; liveSessionId?: string; liveSessionUrl?: string };
+/** The worker pool holds 4 browser contexts — a 5th live tab has none. */
+export const MAX_LIVE_TABS = 4;
 
-function requireLiveSession(execCtx?: LiveExecCtx): string | null {
-  return execCtx?.liveSessionId || null;
+type LiveTab = { id: string; url?: string };
+type LiveExecCtx = { sessionId?: string; liveSessionId?: string; liveSessionUrl?: string; liveSessions?: LiveTab[] };
+
+/** The turn's tab list, kept in sync with the legacy single-session fields
+ * (liveSessionId/liveSessionUrl = the ACTIVE tab, for back-compat). */
+function liveTabList(execCtx?: LiveExecCtx): LiveTab[] {
+  if (!execCtx) return [];
+  if (!Array.isArray(execCtx.liveSessions)) execCtx.liveSessions = [];
+  if (execCtx.liveSessionId && !execCtx.liveSessions.some((t) => t.id === execCtx.liveSessionId)) {
+    execCtx.liveSessions.push({ id: execCtx.liveSessionId, url: execCtx.liveSessionUrl });
+  }
+  return execCtx.liveSessions;
 }
+
+function setActiveLiveTab(execCtx: LiveExecCtx | undefined, tab: LiveTab): void {
+  if (!execCtx) return;
+  execCtx.liveSessionId = tab.id;
+  execCtx.liveSessionUrl = tab.url;
+}
+
+function liveTabNumber(execCtx: LiveExecCtx | undefined, tab: LiveTab): number {
+  return Math.max(1, liveTabList(execCtx).indexOf(tab) + 1);
+}
+
+/** Resolve a `tab` argument: 1-based tab number, or a session id. No arg
+ * means the active tab. Returns the tab or a clear error naming the open tabs. */
+function resolveLiveTab(execCtx: LiveExecCtx | undefined, tabArg: any): { tab?: LiveTab; error?: string } {
+  const tabs = liveTabList(execCtx);
+  if (tabs.length === 0) return { error: 'No live browser session yet — call browser_goto with a url first.' };
+  if (tabArg === undefined || tabArg === null || tabArg === '') {
+    return { tab: tabs.find((t) => t.id === execCtx?.liveSessionId) || tabs[0] };
+  }
+  const n = Number(tabArg);
+  if (Number.isInteger(n)) {
+    if (n >= 1 && n <= tabs.length) return { tab: tabs[n - 1] };
+    return { error: `There is no live browser tab ${n} — ${tabs.length} tab(s) open (${tabs.map((t, i) => `${i + 1}: ${t.url || t.id}`).join(', ')}). Use browser_list_tabs to see them.` };
+  }
+  const byId = tabs.find((t) => t.id === String(tabArg));
+  if (byId) return { tab: byId };
+  return { error: `No live browser tab "${String(tabArg)}" — ${tabs.length} tab(s) open. Use browser_list_tabs to see them.` };
+}
+
+/** Refusing a 5th tab: the pool is full, so the only way forward is for
+ * the user to close a tab in the Browser tab first. */
+const POOL_FULL_ERROR = 'The live browser already has 4 tabs open — close a tab in the Browser tab first, then try again.';
 
 async function execBrowserGoto(args: any, execCtx?: LiveExecCtx): Promise<any> {
   const url = String(args.url || '').trim();
   if (!url) return { error: 'browser_goto needs a url.' };
+  const newTab = Boolean(args.new_tab);
   try {
-    const existing = requireLiveSession(execCtx);
-    if (existing) {
-      await liveAction(existing, 'goto', { url });
+    const tabs = liveTabList(execCtx);
+    const active = tabs.find((t) => t.id === execCtx?.liveSessionId);
+    if (active && !newTab) {
+      // Existing behaviour: navigate the active tab in place.
+      await liveAction(active.id, 'goto', { url });
+      active.url = url;
       if (execCtx) execCtx.liveSessionUrl = url;
-      return { success: true, message: `Navigated the live browser to ${url}.`, liveSessionId: existing, liveSessionUrl: url };
+      const n = tabs.indexOf(active) + 1;
+      return { success: true, message: `Navigated live browser tab ${n} to ${url}.`, liveSessionId: active.id, liveSessionUrl: url, liveTab: n, liveTabCount: tabs.length };
     }
+    // A new tab (first tab, or new_tab=true): the worker pool holds 4.
+    if (tabs.length >= MAX_LIVE_TABS) return { error: POOL_FULL_ERROR };
     const session = await startLiveSession(url);
-    if (execCtx) { execCtx.liveSessionId = session.id; execCtx.liveSessionUrl = url; }
-    return { success: true, message: `Opened ${url} in the live browser (session ${session.id}). The user can watch it in the Browser tab — narrate what you do there.`, liveSessionId: session.id, liveSessionUrl: url };
+    const tab: LiveTab = { id: session.id, url };
+    tabs.push(tab);
+    setActiveLiveTab(execCtx, tab);
+    return { success: true, message: `Opened ${url} in the live browser (tab ${tabs.length} of ${tabs.length}, session ${session.id}). The user can watch it in the Browser tab — narrate what you do there.`, liveSessionId: session.id, liveSessionUrl: url, liveTab: tabs.length, liveTabCount: tabs.length };
   } catch (err: any) {
+    if (isPoolFullError(err)) return { error: POOL_FULL_ERROR };
     return { error: err.message || String(err) };
   }
 }
 
 async function execBrowserClick(args: any, execCtx?: LiveExecCtx): Promise<any> {
-  const id = requireLiveSession(execCtx);
-  if (!id) return { error: 'No live browser session yet — call browser_goto with a url first.' };
+  const { tab, error } = resolveLiveTab(execCtx, args.tab);
+  if (!tab) return { error };
+  const id = tab.id;
   try {
     if (args.selector) {
       await liveInput(id, { type: 'click', selector: String(args.selector), button: String(args.button || 'left') });
-      return { success: true, message: `Clicked ${args.selector} in the live browser.`, liveSessionId: id };
+      return { success: true, message: `Clicked ${args.selector} in live browser tab ${liveTabNumber(execCtx, tab)}.`, liveSessionId: id };
     }
     const x = Number(args.x);
     const y = Number(args.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return { error: 'browser_click needs x + y viewport coordinates (or a selector).' };
     await liveInput(id, { type: 'click', x, y, button: String(args.button || 'left') });
-    return { success: true, message: `Clicked (${x}, ${y}) in the live browser.`, liveSessionId: id };
+    return { success: true, message: `Clicked (${x}, ${y}) in live browser tab ${liveTabNumber(execCtx, tab)}.`, liveSessionId: id };
   } catch (err: any) {
     return { error: err.message || String(err) };
   }
 }
 
 async function execBrowserType(args: any, execCtx?: LiveExecCtx): Promise<any> {
-  const id = requireLiveSession(execCtx);
-  if (!id) return { error: 'No live browser session yet — call browser_goto with a url first.' };
+  const { tab, error } = resolveLiveTab(execCtx, args.tab);
+  if (!tab) return { error };
+  const id = tab.id;
   const text = String(args.text ?? '');
   if (!text) return { error: 'browser_type needs text.' };
   try {
     await liveInput(id, { type: 'type', text, ...(args.selector ? { selector: String(args.selector) } : {}) });
-    return { success: true, message: `Typed ${text.length} chars in the live browser.`, liveSessionId: id };
+    return { success: true, message: `Typed ${text.length} chars in live browser tab ${liveTabNumber(execCtx, tab)}.`, liveSessionId: id };
   } catch (err: any) {
     return { error: err.message || String(err) };
   }
 }
 
 async function execBrowserPressKey(args: any, execCtx?: LiveExecCtx): Promise<any> {
-  const id = requireLiveSession(execCtx);
-  if (!id) return { error: 'No live browser session yet — call browser_goto with a url first.' };
+  const { tab, error } = resolveLiveTab(execCtx, args.tab);
+  if (!tab) return { error };
+  const id = tab.id;
   const key = String(args.key || '').trim();
   if (!key) return { error: 'browser_press_key needs a key (e.g. "Enter").' };
   try {
     await liveInput(id, { type: 'key', key });
-    return { success: true, message: `Pressed ${key} in the live browser.`, liveSessionId: id };
+    return { success: true, message: `Pressed ${key} in live browser tab ${liveTabNumber(execCtx, tab)}.`, liveSessionId: id };
   } catch (err: any) {
     return { error: err.message || String(err) };
   }
 }
 
 async function execBrowserScreenshot(args: any, execCtx?: LiveExecCtx): Promise<any> {
-  const id = requireLiveSession(execCtx);
-  if (!id) return { error: 'No live browser session yet — call browser_goto with a url first.' };
+  const { tab, error } = resolveLiveTab(execCtx, args.tab);
+  if (!tab) return { error };
+  const id = tab.id;
   try {
     const frame = await getLiveFrame(id);
     const size = frame.width && frame.height ? ` (${frame.width}x${frame.height})` : '';
-    return { success: true, message: `Captured the current live browser frame${size} — it is visible in the Browser tab.`, liveSessionId: id };
+    return { success: true, message: `Captured the current frame of live browser tab ${liveTabNumber(execCtx, tab)}${size} — it is visible in the Browser tab.`, liveSessionId: id };
   } catch (err: any) {
     return { error: err.message || String(err) };
   }
+}
+
+async function execBrowserListTabs(_args: any, execCtx?: LiveExecCtx): Promise<any> {
+  const tabs = liveTabList(execCtx);
+  if (tabs.length === 0) return { success: true, message: 'No live browser tabs open yet — call browser_goto with a url to open the first tab (up to 4 tabs at once).' };
+  const lines = tabs.map((t, i) => `${i + 1}. ${t.url || '(blank page)'}${t.id === execCtx?.liveSessionId ? ' [active]' : ''} (session ${t.id})`);
+  return { success: true, message: `Live browser tabs (${tabs.length}/4):\n${lines.join('\n')}\nYou drive one tab at a time — pass tab: <number> to any browser_* tool, or browser_goto with new_tab: true to open another.` };
 }
 
 async function execGoogle(args: any, kind: string): Promise<any> {
@@ -1949,6 +2026,7 @@ export async function executeNexusTool(
       case 'browser_type': return execBrowserType(args, execCtx);
       case 'browser_press_key': return execBrowserPressKey(args, execCtx);
       case 'browser_screenshot': return execBrowserScreenshot(args, execCtx);
+      case 'browser_list_tabs': return execBrowserListTabs(args, execCtx);
       case 'gmail_list': case 'gmail_search': case 'gmail_send': case 'gmail_draft':
       case 'calendar_list': case 'calendar_create':
       case 'drive_list': case 'docs_create': case 'docs_read':

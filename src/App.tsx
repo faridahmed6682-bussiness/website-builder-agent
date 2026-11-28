@@ -213,8 +213,9 @@ export default function App() {
   // into Stop while a turn runs, and the Browser tab's "Take over" aborts
   // through the same controller (see stopCurrentTurn).
   const chatAbortRef = useRef<AbortController | null>(null);
-  // Shared live browser session (agent tools + Browser tab watch one page).
-  const [liveBrowserSession, setLiveBrowserSession] = useState<{ id: string; url?: string } | null>(null);
+  // Live browser tabs (agent tools + Browser tab share up to 4 live pages).
+  const [liveBrowserTabs, setLiveBrowserTabs] = useState<Array<{ id: string; url?: string }>>([]);
+  const [activeLiveBrowserTabId, setActiveLiveBrowserTabId] = useState<string | null>(null);
   const actionStepsRef = useRef<ActionStep[]>([]);
   const modifiedFilesRef = useRef<string[]>([]);
   const executionDurationRef = useRef<number>(0);
@@ -670,7 +671,21 @@ export default function App() {
           },
           // Live Browser tab: stoppable stream + agent live-session events.
           signal: chatController.signal,
-          onLiveBrowser: (info) => setLiveBrowserSession({ id: info.sessionId, url: info.url }),
+          // Live browser tabs (max 4): the agent learns a tab the moment it
+          // opens/uses one — upsert by session id, activate it. A 5th tab
+          // cannot exist (the worker pool holds 4); guard anyway.
+          onLiveBrowser: (info) => {
+            const tab = { id: info.sessionId, url: info.url };
+            setLiveBrowserTabs((prev) => {
+              if (prev.some((t) => t.id === tab.id)) return prev.map((t) => (t.id === tab.id ? tab : t));
+              return prev.length >= 4 ? prev : [...prev, tab];
+            });
+            setActiveLiveBrowserTabId(tab.id);
+          },
+          // Seed the turn with the tabs already open in the Browser tab so
+          // the agent can drive tabs the user opened.
+          liveTabs: liveBrowserTabs,
+          activeLiveTabId: activeLiveBrowserTabId ?? undefined,
         },
         ({ filePath }) => {
           recordModifiedFile(filePath);
@@ -1000,8 +1015,10 @@ export default function App() {
           showTeamPanel={showTeamPanel}
           teamStatuses={teamStatuses}
           onAnalyzeError={handleAnalyzeError}
-          liveBrowserSession={liveBrowserSession}
-          onLiveBrowserSessionChange={setLiveBrowserSession}
+          liveBrowserTabs={liveBrowserTabs}
+          activeLiveBrowserTabId={activeLiveBrowserTabId}
+          onLiveBrowserTabsChange={setLiveBrowserTabs}
+          onActiveLiveBrowserTabChange={setActiveLiveBrowserTabId}
           onStopTurn={stopCurrentTurn}
           isBackgroundJobRunning={runningJob !== null}
           // Step 12 (P1): the preview iframe renders currentSessionHtml via
