@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Globe, Hand, Bot, X, RefreshCw, AlertTriangle, MousePointerClick, Keyboard, Maximize2, ChevronDown, Plus } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Globe, Hand, Bot, X, RefreshCw, AlertTriangle, MousePointerClick, Keyboard, Maximize2, Minimize2, ChevronDown, Plus, CornerDownLeft } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export interface LiveBrowserSession {
@@ -85,6 +86,15 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
   const [typeText, setTypeText] = useState('');
   const [starting, setStarting] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Esc exits fullscreen.
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setIsFullscreen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isFullscreen]);
   const frameWrapRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const hadFrameRef = useRef(false);
@@ -152,17 +162,39 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
   // user's clicks must never race the agent's tool calls on the same page.
   const userInputLocked = !takenOver && isAgentRunning;
 
-  // Scale a click inside the displayed frame to page-viewport coordinates.
-  const handleFrameMouseDown = (e: React.MouseEvent) => {
-    if (!activeTabId || userInputLocked) return;
-    const rect = frameWrapRef.current?.getBoundingClientRect();
+  // Map a pointer event on the displayed frame to page-viewport coords.
+  // ROOT CAUSE of the dead buttons: the old code scaled against the
+  // WRAPPER rect, but the <img> is object-contain inside a taller/wider
+  // wrapper — the page is letterboxed, so taps mapped to the wrong page
+  // point (e.g. the Google sign-in Next button never got the click).
+  // Use the image's own box; taps on the letterbox (outside the page)
+  // are ignored.
+  const pageCoordsFromEvent = (e: React.PointerEvent | React.WheelEvent): { x: number; y: number } | null => {
     const img = imgRef.current;
-    if (!rect || !img) return;
-    const vw = frameSize?.w || img.naturalWidth || rect.width;
-    const vh = frameSize?.h || img.naturalHeight || rect.height;
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * vw);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * vh);
-    void sendInput({ type: 'click', x, y, button: e.button === 2 ? 'right' : 'left' });
+    if (!img) return null;
+    const imgRect = img.getBoundingClientRect();
+    if (imgRect.width <= 0 || imgRect.height <= 0) return null;
+    const vw = frameSize?.w || img.naturalWidth || 1366;
+    const vh = frameSize?.h || img.naturalHeight || 768;
+    const px = e.clientX - imgRect.left;
+    const py = e.clientY - imgRect.top;
+    if (px < 0 || py < 0 || px > imgRect.width || py > imgRect.height) return null;
+    return {
+      x: Math.max(0, Math.min(vw - 1, Math.round((px / imgRect.width) * vw))),
+      y: Math.max(0, Math.min(vh - 1, Math.round((py / imgRect.height) * vh))),
+    };
+  };
+
+  // Pointer events cover mouse + touch with one handler. preventDefault
+  // stops the tap becoming a scroll/zoom gesture or a second synthetic
+  // mouse event; the frame is focused manually so keys reach the page.
+  const handleFramePointerDown = (e: React.PointerEvent) => {
+    if (!activeTabId || userInputLocked || !e.isPrimary) return;
+    e.preventDefault();
+    frameWrapRef.current?.focus({ preventScroll: true });
+    const pt = pageCoordsFromEvent(e);
+    if (!pt) return;
+    void sendInput({ type: 'click', x: pt.x, y: pt.y, button: e.button === 2 ? 'right' : 'left' });
   };
 
   const handleFrameKeyDown = (e: React.KeyboardEvent) => {
@@ -175,17 +207,8 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
   const handleWheel = (e: React.WheelEvent) => {
     if (!activeTabId || userInputLocked) return;
     // Include the pointer position — the worker wheels at x/y.
-    const rect = frameWrapRef.current?.getBoundingClientRect();
-    const img = imgRef.current;
-    let x = 683;
-    let y = 384;
-    if (rect && img) {
-      const vw = frameSize?.w || img.naturalWidth || rect.width;
-      const vh = frameSize?.h || img.naturalHeight || rect.height;
-      x = Math.round(((e.clientX - rect.left) / rect.width) * vw);
-      y = Math.round(((e.clientY - rect.top) / rect.height) * vh);
-    }
-    void sendInput({ type: 'scroll', x, y, deltaX: Math.round(e.deltaX), deltaY: Math.round(e.deltaY) });
+    const pt = pageCoordsFromEvent(e) || { x: 683, y: 384 };
+    void sendInput({ type: 'scroll', x: pt.x, y: pt.y, deltaX: Math.round(e.deltaX), deltaY: Math.round(e.deltaY) });
   };
 
   const handleGo = async () => {
@@ -288,6 +311,13 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
     setTypeText('');
   };
 
+  // Enter on the page — e.g. advance Google sign-in after typing the
+  // email, without having to tap the Next button.
+  const handlePressEnter = async () => {
+    if (!activeTabId || userInputLocked) return;
+    await sendInput({ type: 'key', key: 'Enter' });
+  };
+
   // --- MINI variant: compact inline panel inside the chat view. Same
   // session, same SSE stream, same input handlers as the full tab — only
   // the layout is smaller. Only one variant is ever mounted at a time
@@ -362,11 +392,11 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
         <div
           ref={frameWrapRef}
           tabIndex={0}
-          onMouseDown={handleFrameMouseDown}
+          onPointerDown={handleFramePointerDown}
           onKeyDown={handleFrameKeyDown}
           onWheel={handleWheel}
           onContextMenu={(e) => e.preventDefault()}
-          className="h-44 sm:h-56 flex items-center justify-center overflow-hidden outline-none focus:ring-1 focus:ring-indigo-500/50"
+          className="h-44 sm:h-56 flex items-center justify-center overflow-hidden outline-none focus:ring-1 focus:ring-indigo-500/50 touch-none"
           title={activeTab ? (takenOver ? 'You are driving — click / type to control the page' : 'Agent is driving — click Take over to drive it yourself') : 'No live browser session'}
         >
           {!activeTab && (
@@ -398,8 +428,11 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
     );
   }
 
-  return (
-    <div className="flex-1 flex flex-col min-h-0 bg-[#0b0e14]">
+  // Fullscreen: portaled to document.body so it truly fills the viewport
+  // (covers the app's bottom tab bar) regardless of any transformed
+  // ancestor; Esc or the ✕/Minimize button exits.
+  const fullPanel = (
+    <div className={cn("flex flex-col bg-[#0b0e14]", isFullscreen ? "fixed inset-0 z-[100]" : "flex-1 min-h-0")}>
       {/* Tab strip: one chip per live tab + new-tab button (max 4). */}
       <div className="flex items-center gap-1 px-2 pt-2 flex-shrink-0 overflow-x-auto">
         {tabs.map((tab, i) => {
@@ -490,6 +523,15 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
           </button>
         )}
         {activeTab && (
+          <button
+            onClick={() => setIsFullscreen((v) => !v)}
+            className="p-1.5 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+            title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen — fill the whole screen (Esc to exit)'}
+          >
+            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+        )}
+        {activeTab && (
           <span className={cn(
             "inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-semibold",
             status === 'live' ? "bg-emerald-500/10 text-emerald-400" :
@@ -506,11 +548,11 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
       <div
         ref={frameWrapRef}
         tabIndex={0}
-        onMouseDown={handleFrameMouseDown}
+        onPointerDown={handleFramePointerDown}
         onKeyDown={handleFrameKeyDown}
         onWheel={handleWheel}
         onContextMenu={(e) => e.preventDefault()}
-        className="flex-1 min-h-0 flex items-center justify-center overflow-hidden outline-none focus:ring-1 focus:ring-indigo-500/50"
+        className="flex-1 min-h-0 flex items-center justify-center overflow-hidden outline-none focus:ring-1 focus:ring-indigo-500/50 touch-none"
         title={activeTab ? (takenOver ? 'You are driving — click / type to control the page' : 'Agent is driving — click Take over to drive it yourself') : 'Start a live browser session above'}
       >
         {!activeTab && (
@@ -568,6 +610,15 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
           >
             Type
           </button>
+          <button
+            onClick={() => void handlePressEnter()}
+            disabled={userInputLocked}
+            className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1"
+            title="Press Enter on the page (e.g. advance after typing an email)"
+          >
+            <CornerDownLeft className="w-3.5 h-3.5" />
+            Enter
+          </button>
           <span className="text-[11px] text-slate-500">
             {takenOver
               ? 'You are driving — click the page, scroll, or use your keyboard (focus the frame first).'
@@ -579,4 +630,6 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
       )}
     </div>
   );
+  if (isFullscreen) return createPortal(fullPanel, document.body);
+  return fullPanel;
 };

@@ -1722,7 +1722,10 @@ async function execBrowserClick(args: any, execCtx?: LiveExecCtx): Promise<any> 
   const id = tab.id;
   try {
     if (args.selector) {
-      await liveInput(id, { type: 'click', selector: String(args.selector), button: String(args.button || 'left') });
+      // Selector clicks must go through the worker's /action endpoint
+      // (page.click(selector)); liveInput drops the selector and would
+      // click (0,0) instead.
+      await liveAction(id, 'click', { selector: String(args.selector), button: String(args.button || 'left') });
       return { success: true, message: `Clicked ${args.selector} in live browser tab ${liveTabNumber(execCtx, tab)}.`, liveSessionId: id };
     }
     const x = Number(args.x);
@@ -1742,7 +1745,14 @@ async function execBrowserType(args: any, execCtx?: LiveExecCtx): Promise<any> {
   const text = String(args.text ?? '');
   if (!text) return { error: 'browser_type needs text.' };
   try {
-    await liveInput(id, { type: 'type', text, ...(args.selector ? { selector: String(args.selector) } : {}) });
+    if (args.selector) {
+      // Selector typing must go through /action (page.fill(selector));
+      // liveInput drops the selector and would type into whatever is
+      // focused (or nothing).
+      await liveAction(id, 'type', { selector: String(args.selector), text });
+    } else {
+      await liveInput(id, { type: 'type', text });
+    }
     return { success: true, message: `Typed ${text.length} chars in live browser tab ${liveTabNumber(execCtx, tab)}.`, liveSessionId: id };
   } catch (err: any) {
     return { error: err.message || String(err) };
