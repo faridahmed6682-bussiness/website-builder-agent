@@ -183,7 +183,7 @@ export default function App() {
   // STEP 13 (P1): set when the last build was served from the build cache
   // (no model call) — shows the "cached build" label + "rebuild anyway".
   const [cachedBuild, setCachedBuild] = useState<{ model?: string; cacheHits?: number } | null>(null);
-  const [activeMode, setActiveMode] = useState<'general' | 'coding' | 'image' | 'search'>('coding');
+  const [activeMode, setActiveMode] = useState<'general' | 'coding' | 'image' | 'search'>('general');
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [activeCoderTab, setActiveCoderTab] = useState<'chat' | 'preview' | 'artifacts'>('chat');
   const [isWorkingExpanded, setIsWorkingExpanded] = useState(false);
@@ -918,7 +918,7 @@ export default function App() {
         setCurrentSessionId(session.id);
         setCurrentSessionTitle(session.title || 'Live Canvas');
         setMessages(session.messages || []);
-        setActiveMode((session.mode as any) || 'coding');
+        setActiveMode((session.mode as any) || 'general');
         setError(null);
         setCachedBuild(null);
         setActivityLogs([]);
@@ -1507,8 +1507,8 @@ export default function App() {
                           <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Select Agent Mode</span>
                         </div>
                         {[
-                          { id: 'coding', icon: Code, label: 'PWA & Web Builder', desc: 'PWAs, Stores, Dashboards & Games' },
                           { id: 'general', icon: Sparkles, label: 'General Assistant', desc: 'Chat & guidance' },
+                          { id: 'coding', icon: Code, label: 'PWA & Web Builder', desc: 'PWAs, Stores, Dashboards & Games' },
                           { id: 'image', icon: ImageIcon, label: 'Image Artist', desc: 'Generate visuals' },
                           { id: 'search', icon: Search, label: 'Web Explorer', desc: 'Live search' },
                         ].map((mode) => (
