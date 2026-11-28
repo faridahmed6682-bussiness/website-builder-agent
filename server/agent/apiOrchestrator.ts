@@ -2697,6 +2697,10 @@ export async function handleOrchestratedChat(
     preferredProvider?: string; 
     safePacing?: boolean;
     sessionId?: string;
+    /** Page origin the user is on (sent by the frontend) — used to resolve
+     * a bare "open the site" request to the current project's preview URL.
+     * Falls back to RENDER_EXTERNAL_URL server-side. */
+    origin?: string;
     selectedModel?: string;
     developerPersona?: string;
     customSystemInstruction?: string;
@@ -2832,7 +2836,7 @@ export async function handleOrchestratedChat(
   // --- Tier 0: rule-based direct commands (zero model calls) ---------------
   // Deterministic commands (show file / list files / git status / search)
   // run as code and go straight to the UI — the model is never involved.
-  const direct = matchDirectCommand(initialLastMessage, sessionId);
+  const direct = matchDirectCommand(initialLastMessage, sessionId, req.origin);
   if (direct) {
     try {
       let resultText = '';
@@ -2843,6 +2847,28 @@ export async function handleOrchestratedChat(
         // Deterministic file edit (Step 14): exact string op on a known
         // file — no model call, never cached (it is a write).
         resultText = await applyDirectEdit(direct);
+      } else if (direct.kind === 'browser') {
+        // Direct "open in browser": start a live session + goto, nothing
+        // else — no model call, no omo_coordinate, no file edits, no
+        // rebuild. The live_browser event tells the frontend to switch to
+        // the Browser tab (same event the agent loop emits for browser_*
+        // tools). The reply is a short confirmation in the user's language.
+        const browserExecCtx: ToolExecutionContext = { sessionId };
+        const browserResult = await executeServerTool('browser_goto', direct.args, (a) => sendEvent({ type: 'action', action: a }), browserExecCtx);
+        const isBn = /[\u0980-\u09FF]/.test(initialLastMessage);
+        const targetUrl = String((direct.args as any)?.url || '');
+        if (browserResult && typeof browserResult === 'object' && (browserResult as any).liveSessionId) {
+          sendEvent({ type: 'live_browser', sessionId: (browserResult as any).liveSessionId, url: (browserResult as any).liveSessionUrl || targetUrl });
+        }
+        if (browserResult && typeof browserResult === 'object' && (browserResult as any).error) {
+          resultText = isBn
+            ? `⚠️ ব্রাউজারে খুলতে পারিনি: ${String((browserResult as any).error).slice(0, 300)}`
+            : `⚠️ Could not open in the browser: ${String((browserResult as any).error).slice(0, 300)}`;
+        } else {
+          resultText = isBn
+            ? `✅ ব্রাউজার ট্যাবে খোলা হয়েছে: ${targetUrl}`
+            : `✅ Opened in the Browser tab: ${targetUrl}`;
+        }
       } else {
         const cached = await getCachedToolResult(direct.tool, direct.args);
         if (cached.hit) {

@@ -78,6 +78,10 @@ export async function chatWithAI(
       messages: trimMessagesToWindow(messages),
       mode,
       sessionId,
+      // Page origin (e.g. https://website-builder-agent-1vp3.onrender.com) —
+      // the server uses it to resolve a bare "open the site" request to the
+      // current project's preview URL for the live browser.
+      origin: typeof window !== 'undefined' ? window.location.origin : undefined,
       userKeys: localKeys,
       keys: localKeys,
       preferOnlyCustomKeys,
