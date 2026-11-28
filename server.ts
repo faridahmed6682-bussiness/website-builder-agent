@@ -40,6 +40,7 @@ import { addRouterKey, removeRouterKey, routerKeyStatus, getRouterApiKey } from 
 import { 
   handleOrchestratedChat, 
   resolvePendingQuestion,
+  cancelTurn,
   loadSecrets, 
   saveSecrets, 
   testApiKey, 
@@ -49,6 +50,7 @@ import {
   getSystemLogs,
   clearSystemLogs
 } from './server/agent/apiOrchestrator.ts';
+import { startLiveSession, liveAction, liveInput, closeLiveSession, getLiveFrame } from './server/agent/browserWorker.ts';
 
 dotenv.config();
 
@@ -183,6 +185,114 @@ async function startServer() {
       return res.status(404).json({ success: false, error: 'Question session expired or not found' });
     }
     res.json({ success: true });
+  });
+
+  // Stop the running turn (Stop button / Browser-tab "Take over"). The
+  // agent loops check the flag at every round boundary and stop issuing
+  // tool calls; the client also aborts its fetch, which the chat handler
+  // treats as a cancel the same way.
+  app.post('/api/gemini/cancel', (req, res) => {
+    const { sessionId } = req.body || {};
+    if (!sessionId || typeof sessionId !== 'string') {
+      return res.status(400).json({ success: false, error: 'sessionId is required' });
+    }
+    cancelTurn(sessionId);
+    res.json({ success: true });
+  });
+
+  // --- Live browser tab (Muse-like): proxy to the browser worker's live
+  // sessions. The worker key never leaves the server — the frontend only
+  // ever sees session ids and frames. ------------------------------------
+  app.post('/api/browser/live/start', async (req, res) => {
+    try {
+      const { url, width, height } = req.body || {};
+      const session = await startLiveSession(
+        typeof url === 'string' ? url : undefined,
+        { width: Number(width) || undefined, height: Number(height) || undefined },
+      );
+      res.json({ success: true, sessionId: session.id, url: session.url, width: session.width, height: session.height });
+    } catch (err: any) {
+      res.status(502).json({ success: false, error: err.message || 'Failed to start a live browser session' });
+    }
+  });
+
+  app.post('/api/browser/live/action', async (req, res) => {
+    try {
+      const { sessionId, action, ...payload } = req.body || {};
+      if (!sessionId || !action) return res.status(400).json({ success: false, error: 'sessionId and action are required' });
+      const result = await liveAction(String(sessionId), String(action), payload);
+      res.json({ success: true, result: result ?? null });
+    } catch (err: any) {
+      res.status(502).json({ success: false, error: err.message || 'Live browser action failed' });
+    }
+  });
+
+  app.post('/api/browser/live/input', async (req, res) => {
+    try {
+      const { sessionId, ...event } = req.body || {};
+      if (!sessionId || !event.type) return res.status(400).json({ success: false, error: 'sessionId and event type are required' });
+      await liveInput(String(sessionId), event);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(502).json({ success: false, error: err.message || 'Live browser input failed' });
+    }
+  });
+
+  app.post('/api/browser/live/close', async (req, res) => {
+    try {
+      const { sessionId } = req.body || {};
+      if (!sessionId) return res.status(400).json({ success: false, error: 'sessionId is required' });
+      await closeLiveSession(String(sessionId));
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(502).json({ success: false, error: err.message || 'Failed to close the live browser session' });
+    }
+  });
+
+  app.get('/api/browser/live/frame', async (req, res) => {
+    try {
+      const sessionId = String(req.query.sessionId || '');
+      if (!sessionId) return res.status(400).json({ success: false, error: 'sessionId is required' });
+      const frame = await getLiveFrame(sessionId);
+      res.json({ success: true, image: frame.image, width: frame.width, height: frame.height });
+    } catch (err: any) {
+      res.status(502).json({ success: false, error: err.message || 'Failed to fetch a live browser frame' });
+    }
+  });
+
+  // SSE screencast relay: polls the worker's frame endpoint (~2 fps) and
+  // pushes data-URL frames to the Browser tab. Polling keeps this working
+  // even if the worker's own WS/SSE screencast is unavailable.
+  app.get('/api/browser/live/stream', async (req, res) => {
+    const sessionId = String(req.query.sessionId || '');
+    if (!sessionId) {
+      res.status(400).json({ success: false, error: 'sessionId is required' });
+      return;
+    }
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    let closed = false;
+    let failures = 0;
+    res.on('close', () => { closed = true; clearInterval(timer); });
+    const sendFrame = async () => {
+      if (closed) return;
+      try {
+        const frame = await getLiveFrame(sessionId);
+        failures = 0;
+        res.write(`data: ${JSON.stringify({ type: 'frame', image: frame.image, width: frame.width, height: frame.height })}\n\n`);
+      } catch (err: any) {
+        failures++;
+        if (failures >= 5) {
+          res.write(`data: ${JSON.stringify({ type: 'error', error: err.message || 'Live browser frame unavailable' })}\n\n`);
+          clearInterval(timer);
+          res.end();
+        }
+      }
+    };
+    const timer = setInterval(sendFrame, 600);
+    timer.unref?.();
+    await sendFrame();
   });
 
   // Secrets: Get stored keys with masked values and real-time status

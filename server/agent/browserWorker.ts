@@ -176,3 +176,103 @@ export async function pingWorker(): Promise<boolean> {
     return false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Live browser sessions (Muse-like Browser tab) — the worker half exposes:
+//   POST /api/live/start, POST /api/live/:id/action, POST /api/live/:id/input,
+//   POST /api/live/:id/close, GET /api/live/:id/frame (+ screencast stream).
+// The worker key stays server-side: these functions are never called from
+// the frontend — the frontend talks to /api/browser/live/* on this server,
+// which proxies here. A session is one live page shared by the agent's
+// browser_* tools (via execCtx.liveSessionId) and the user's Browser tab.
+// ---------------------------------------------------------------------------
+
+export interface LiveSessionInfo {
+  id: string;
+  url?: string;
+  width?: number;
+  height?: number;
+  paused?: boolean;
+}
+
+/** POST /api/live/start {url?, width?, height?} — open a live page. */
+export async function startLiveSession(
+  url?: string,
+  opts?: { width?: number; height?: number },
+): Promise<LiveSessionInfo> {
+  const cfg = getWorkerConfig();
+  if (!cfg) throw new Error('Browser worker is not configured (set BROWSER_WORKER_URL + BROWSER_WORKER_KEY).');
+  const body = await workerFetch(cfg, cfg.primaryUrl, '/api/live/start', {
+    method: 'POST',
+    body: JSON.stringify({
+      ...(url ? { url } : {}),
+      ...(opts?.width ? { width: opts.width } : {}),
+      ...(opts?.height ? { height: opts.height } : {}),
+    }),
+  }, 30000);
+  const id = body?.sessionId || body?.id || '';
+  if (!id) throw new Error('Browser worker did not return a live session id.');
+  return { id, url: body?.url || url, width: body?.width, height: body?.height, paused: Boolean(body?.paused) };
+}
+
+/** POST /api/live/:id/action {action, ...payload} — goto / pause / resume / etc. */
+export async function liveAction(
+  sessionId: string,
+  action: string,
+  payload?: Record<string, any>,
+): Promise<any> {
+  const cfg = getWorkerConfig();
+  if (!cfg) throw new Error('Browser worker is not configured (set BROWSER_WORKER_URL + BROWSER_WORKER_KEY).');
+  if (!sessionId) throw new Error('liveAction needs a session id.');
+  return workerFetch(cfg, cfg.primaryUrl, `/api/live/${encodeURIComponent(sessionId)}/action`, {
+    method: 'POST',
+    body: JSON.stringify({ action, ...(payload || {}) }),
+  }, 30000);
+}
+
+/** POST /api/live/:id/input — pointer/keyboard/type events for a live page. */
+export async function liveInput(
+  sessionId: string,
+  event: Record<string, any>,
+): Promise<any> {
+  const cfg = getWorkerConfig();
+  if (!cfg) throw new Error('Browser worker is not configured (set BROWSER_WORKER_URL + BROWSER_WORKER_KEY).');
+  if (!sessionId) throw new Error('liveInput needs a session id.');
+  return workerFetch(cfg, cfg.primaryUrl, `/api/live/${encodeURIComponent(sessionId)}/input`, {
+    method: 'POST',
+    body: JSON.stringify(event),
+  }, 30000);
+}
+
+/** POST /api/live/:id/close — end a live session. */
+export async function closeLiveSession(sessionId: string): Promise<boolean> {
+  const cfg = getWorkerConfig();
+  if (!cfg) throw new Error('Browser worker is not configured (set BROWSER_WORKER_URL + BROWSER_WORKER_KEY).');
+  if (!sessionId) throw new Error('closeLiveSession needs a session id.');
+  await workerFetch(cfg, cfg.primaryUrl, `/api/live/${encodeURIComponent(sessionId)}/close`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  }, 30000);
+  return true;
+}
+
+/** Pause/resume a live session (Take over / Give back to agent). */
+export async function setLiveSessionPaused(sessionId: string, paused: boolean): Promise<any> {
+  return liveAction(sessionId, paused ? 'pause' : 'resume');
+}
+
+function normalizeFrame(body: any): { image: string; width?: number; height?: number } {
+  const raw = body?.jpegBase64 || body?.jpeg || body?.image || body?.frame || body?.data || '';
+  if (!raw) throw new Error('Browser worker returned no live frame.');
+  const image = String(raw).startsWith('data:') ? String(raw) : `data:image/jpeg;base64,${String(raw)}`;
+  return { image, width: body?.width, height: body?.height };
+}
+
+/** GET /api/live/:id/frame — one screencast frame (base64 JPEG). */
+export async function getLiveFrame(sessionId: string): Promise<{ image: string; width?: number; height?: number }> {
+  const cfg = getWorkerConfig();
+  if (!cfg) throw new Error('Browser worker is not configured (set BROWSER_WORKER_URL + BROWSER_WORKER_KEY).');
+  if (!sessionId) throw new Error('getLiveFrame needs a session id.');
+  const body = await workerFetch(cfg, cfg.primaryUrl, `/api/live/${encodeURIComponent(sessionId)}/frame`, {}, 15000);
+  return normalizeFrame(body);
+}

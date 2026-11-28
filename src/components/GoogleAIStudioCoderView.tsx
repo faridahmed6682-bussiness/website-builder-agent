@@ -35,6 +35,7 @@ import {
   Bug,
   Bot,
   Eye,
+  Globe,
   Pencil,
   Save,
   AlertTriangle,
@@ -49,6 +50,7 @@ import { DeployButton } from './DeployButton';
 import { FirebaseConnectButton, AddFirebaseButton } from './FirebaseConnectButton';
 import { ActionStep } from '../types/secrets';
 import { TeamStatus, type AgentStatus } from './TeamStatus';
+import { LiveBrowserPanel } from './LiveBrowserPanel';
 
 interface GoogleAIStudioCoderViewProps {
   messages: any[];
@@ -107,6 +109,12 @@ interface GoogleAIStudioCoderViewProps {
   // parent can sync any in-memory copy (e.g. currentSessionHtml, which the
   // preview iframe renders via srcDoc) with the edited content.
   onArtifactSaved?: (filePath: string, content: string) => void;
+  // Live Browser tab: the shared live session the agent opened (or the
+  // user started from the tab itself). Null = no session yet.
+  liveBrowserSession?: { id: string; url?: string } | null;
+  onLiveBrowserSessionChange?: (session: { id: string; url?: string } | null) => void;
+  // Stop the running agent turn (Stop button / Browser-tab "Take over").
+  onStopTurn?: () => void;
 }
 
 const STARTER_PROMPTS = [
@@ -202,8 +210,11 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
   teamStatuses = [],
   onAnalyzeError,
   onArtifactSaved,
+  liveBrowserSession = null,
+  onLiveBrowserSessionChange,
+  onStopTurn,
 }) => {
-  const [activeCoderTab, setActiveCoderTab] = useState<'chat' | 'preview' | 'artifacts'>('chat');
+  const [activeCoderTab, setActiveCoderTab] = useState<'chat' | 'preview' | 'artifacts' | 'browser'>('chat');
   const [isWorkingExpanded, setIsWorkingExpanded] = useState(false);
   const [executionDuration, setExecutionDuration] = useState<number>(0);
   const [lastRunDuration, setLastRunDuration] = useState<number>(156);
@@ -231,6 +242,13 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
   useEffect(() => {
     setPreviewErrors([]);
   }, [previewKey, currentSessionId]);
+
+  // Live Browser tab: when the agent opens a live session, switch to it
+  // so the user sees the page the agent is driving.
+  const liveSessionId = liveBrowserSession?.id ?? null;
+  useEffect(() => {
+    if (liveSessionId) setActiveCoderTab('browser');
+  }, [liveSessionId]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -1421,6 +1439,15 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
             </div>
           </div>
         )}
+
+        {activeCoderTab === 'browser' && (
+          <LiveBrowserPanel
+            session={liveBrowserSession}
+            onSessionChange={(s) => onLiveBrowserSessionChange?.(s)}
+            onTakeOver={() => onStopTurn?.()}
+            isAgentRunning={isLoading}
+          />
+        )}
       </main>
 
       {/* Sticky Bottom Navigation Bar matching Google AI Studio screenshot */}
@@ -1479,6 +1506,21 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
             )}
           >
             Artifacts
+          </button>
+          <button
+            onClick={() => setActiveCoderTab('browser')}
+            className={cn(
+              "px-4 py-1.5 rounded-full text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer",
+              activeCoderTab === 'browser' 
+                ? "bg-[#2b2d33] text-white shadow-sm" 
+                : "text-slate-400 hover:text-slate-200"
+            )}
+          >
+            <Globe className="w-3.5 h-3.5" />
+            <span>Browser</span>
+            {liveBrowserSession ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" title="Live browser session active" />
+            ) : null}
           </button>
         </div>
 

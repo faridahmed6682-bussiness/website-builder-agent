@@ -30,6 +30,11 @@ export interface AskQuestionAnswerPayload {
 
 export interface ToolExecutionContext {
   sessionId?: string;
+  /** Live browser session shared by the browser_* tools within one turn —
+   * browser_goto starts it, the other browser_* tools reuse it, and the
+   * user's Browser tab watches the same page (see browserWorker.ts). */
+  liveSessionId?: string;
+  liveSessionUrl?: string;
   llmInvoker?: (systemPrompt: string, userPrompt: string) => Promise<string>;
   onAskQuestion?: (questions: AskQuestionItem[]) => Promise<AskQuestionAnswerPayload>;
   onAgentStep?: (step: {
@@ -937,7 +942,7 @@ export const serverTools: FunctionDeclaration[] = [
 // STEP 4 (P0): the single shared tool allowlist for BOTH agent loops.
 // The Gemini path used to send all 98 serverTools declarations on every
 // call (~10,400 tokens of schema); the OpenAI-compatible path only ever
-// sent the 81 tools below (toOpenAITools, apiOrchestrator.ts). Both loops
+// sent the 86 tools below (toOpenAITools, apiOrchestrator.ts). Both loops
 // now filter through CORE_TOOL_NAMES, so the Gemini path matches the
 // OpenAI path exactly. The 17 tools NOT in this set are excluded from
 // both loops' native declarations:
@@ -1007,7 +1012,7 @@ export const CORE_TOOL_NAMES: Set<string> = new Set([
   'read_memory',
   'save_lesson',
   'queue_job',
-  // Nexus tools (37) — every one has a working implementation in
+  // Nexus tools (46) — every one has a working implementation in
   // server/nexusTools.ts and is delegated in geminiService.executeServerTool.
   'github_push',
   'github_create_repo',
@@ -1038,6 +1043,13 @@ export const CORE_TOOL_NAMES: Set<string> = new Set([
   'browse_job',
   'browse_vision',
   'browse_resume',
+  // Live browser (Browser tab): fine-grained control of one shared live
+  // page — goto/click/type/press_key/screenshot on execCtx.liveSessionId.
+  'browser_goto',
+  'browser_click',
+  'browser_type',
+  'browser_press_key',
+  'browser_screenshot',
   'gmail_list',
   'gmail_search',
   'gmail_send',
@@ -1053,7 +1065,7 @@ export const CORE_TOOL_NAMES: Set<string> = new Set([
 ]);
 
 /** STEP 4 (P0): the declarations a loop may offer the model natively —
- * the 81 core tools. Pass the result, never raw serverTools, to any chat. */
+ * the 86 core tools. Pass the result, never raw serverTools, to any chat. */
 export function filterCoreTools(declarations: FunctionDeclaration[]): FunctionDeclaration[] {
   return declarations.filter((fn) => fn.name && CORE_TOOL_NAMES.has(fn.name));
 }
@@ -1687,7 +1699,7 @@ export async function executeServerTool(
   }
 
   try {
-    // Nexus tools (37) are delegated to their own dispatcher — every one has
+    // Nexus tools (46) are delegated to their own dispatcher — every one has
     // a working implementation in server/nexusTools.ts. This must run before
     // the switch below: the switch's `default:` case would otherwise return
     // a fake "Tool executed" for a name it does not know.
@@ -2824,7 +2836,7 @@ export async function handleServerGeminiChat(req: { messages: any[]; mode?: stri
       model: modelName,
       config: {
         systemInstruction: getNexusSystemInstruction(mode),
-        // STEP 4 (P0): offer only the 81 core tools, never all 98
+        // STEP 4 (P0): offer only the 86 core tools, never all 103
         // serverTools — same set the OpenAI-compatible loop sends.
         tools: [{ functionDeclarations: filterCoreTools(serverTools) }],
       },

@@ -199,6 +199,12 @@ export default function App() {
   // synchronously, so the second call is always refused (live QA round 2:
   // 3 user messages, only 2 assistant bubbles).
   const isSendingRef = useRef(false);
+  // AbortController for the in-flight chat stream — the Send button turns
+  // into Stop while a turn runs, and the Browser tab's "Take over" aborts
+  // through the same controller (see stopCurrentTurn).
+  const chatAbortRef = useRef<AbortController | null>(null);
+  // Shared live browser session (agent tools + Browser tab watch one page).
+  const [liveBrowserSession, setLiveBrowserSession] = useState<{ id: string; url?: string } | null>(null);
   const actionStepsRef = useRef<ActionStep[]>([]);
   const modifiedFilesRef = useRef<string[]>([]);
   const executionDurationRef = useRef<number>(0);
@@ -364,9 +370,31 @@ export default function App() {
     setTimeout(() => setCopiedCode(false), 2500);
   };
 
+  // Stop the running turn (Send button becomes Stop while loading; the
+  // Browser tab's "Take over" calls this too). Aborts the SSE fetch AND
+  // tells the server to cancel the turn, so the agent loop stops issuing
+  // tool calls at the next round boundary instead of running on.
+  const stopCurrentTurn = () => {
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = null;
+    if (currentSessionId) {
+      fetch('/api/gemini/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: currentSessionId }),
+      }).catch(() => {});
+    }
+    setActionLog('⏹ Stopped — you took over.');
+  };
+
   const handleSend = async (overrideText?: string | React.MouseEvent, options?: { bypassCache?: boolean }) => {
+    // The Send button turns into a Stop button while a turn is running.
+    if (isLoading || isSendingRef.current) {
+      if (typeof overrideText !== 'string') stopCurrentTurn();
+      return;
+    }
     const textToSend = typeof overrideText === 'string' ? overrideText : input;
-    if (!textToSend.trim() || isLoading || isSendingRef.current || cooldown > 0) return;
+    if (!textToSend.trim() || cooldown > 0) return;
     isSendingRef.current = true;
 
     const userMessage: any = { role: 'user', parts: [{ text: textToSend }] };
@@ -434,6 +462,8 @@ export default function App() {
     };
 
     try {
+      const chatController = new AbortController();
+      chatAbortRef.current = chatController;
       await chatWithAI(
         newMessages,
         (text, imageUrl) => {
@@ -533,6 +563,9 @@ export default function App() {
               return idx >= 0 ? prev.map((x, i) => (i === idx ? next : x)) : [...prev, next];
             });
           },
+          // Live Browser tab: stoppable stream + agent live-session events.
+          signal: chatController.signal,
+          onLiveBrowser: (info) => setLiveBrowserSession({ id: info.sessionId, url: info.url }),
         },
         ({ filePath }) => {
           recordModifiedFile(filePath);
@@ -542,6 +575,17 @@ export default function App() {
         }
       );
     } catch (err: any) {
+      // Stopped by the user (Stop button / Browser-tab Take over): not an
+      // error — no banner, no cooldown, no error bubble. If the turn was
+      // stopped before any model text streamed, leave a short note so the
+      // turn does not end in silence.
+      if (err?.name === 'AbortError' || /aborted|AbortError/i.test(err?.message || '')) {
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last?.role === 'model') return prev;
+          return [...prev, { role: 'model', parts: [{ text: '⏹ Turn stopped.' }], isFinished: true }];
+        });
+      } else {
       const errMsg = err?.message || String(err) || '';
       const isRateLimit = errMsg.includes('429') || /rate limit|free-models-per-day|quota/i.test(errMsg);
       const isAuthFailure = Boolean(err?.isAuthError) && !isRateLimit;
@@ -569,7 +613,9 @@ export default function App() {
         isError: true,
         isFinished: true,
       }]);
+      }
     } finally {
+      chatAbortRef.current = null;
       isSendingRef.current = false;
       setIsLoading(false);
       setPendingQuestion(null);
@@ -847,6 +893,9 @@ export default function App() {
           showTeamPanel={showTeamPanel}
           teamStatuses={teamStatuses}
           onAnalyzeError={handleAnalyzeError}
+          liveBrowserSession={liveBrowserSession}
+          onLiveBrowserSessionChange={setLiveBrowserSession}
+          onStopTurn={stopCurrentTurn}
           // Step 12 (P1): the preview iframe renders currentSessionHtml via
           // srcDoc, so a disk-only save would never show in preview — sync
           // the in-memory copy when the edited artifact is projects/index.html.

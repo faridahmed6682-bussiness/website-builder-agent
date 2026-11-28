@@ -53,6 +53,28 @@ interface KeyRuntimeStats {
 
 const keyStatsMap = new Map<string, KeyRuntimeStats>();
 
+// ---------------------------------------------------------------------------
+// Per-turn cancellation (Live Browser tab "Take over" + the Stop button).
+// The frontend aborts its fetch AND POSTs /api/gemini/cancel; both land
+// here. The agent loops check isTurnCancelled at every round boundary and
+// stop issuing tool calls. A fresh turn clears its flag at start, so a
+// cancel can never leak into the next turn. A client disconnect (fetch
+// abort) marks the turn cancelled the same way — see handleOrchestratedChat.
+// ---------------------------------------------------------------------------
+const cancelledTurns = new Set<string>();
+
+export function cancelTurn(sessionId: string): void {
+  if (sessionId) cancelledTurns.add(sessionId);
+}
+
+export function isTurnCancelled(sessionId?: string): boolean {
+  return !!sessionId && cancelledTurns.has(sessionId);
+}
+
+export function clearTurnCancellation(sessionId?: string): void {
+  if (sessionId) cancelledTurns.delete(sessionId);
+}
+
 export interface SystemLogEntry {
   id: string;
   timestamp: number;
@@ -1036,6 +1058,21 @@ function mapToolToActionStep(toolName: string, args: any): { kind: ActionStepKin
   } else if (toolName === 'schedule') {
     kind = 'command';
     label = `Scheduled background timer (${args?.DurationSeconds || 5}s)`;
+  } else if (toolName === 'browser_goto') {
+    kind = 'command';
+    label = 'Opened live browser';
+  } else if (toolName === 'browser_click') {
+    kind = 'command';
+    label = 'Clicked in live browser';
+  } else if (toolName === 'browser_type') {
+    kind = 'command';
+    label = 'Typed in live browser';
+  } else if (toolName === 'browser_press_key') {
+    kind = 'command';
+    label = 'Pressed key in live browser';
+  } else if (toolName === 'browser_screenshot') {
+    kind = 'command';
+    label = 'Captured browser screenshot';
   }
 
   const filePath =
@@ -1061,6 +1098,9 @@ function mapToolToActionStep(toolName: string, args: any): { kind: ActionStepKin
     args?.message ||
     (Array.isArray(args?.PackageNames) ? args.PackageNames.join(', ') : args?.packageName) ||
     args?.TaskId ||
+    args?.url ||
+    args?.text ||
+    args?.key ||
     '';
 
   return { kind, label, detail, filePath };
@@ -1112,6 +1152,15 @@ async function executeToolWithLiveEvents(
 
   // Emit structured real file modification events
   if (!hasError) {
+    // Live browser: a browser_* tool opened/used a shared live session —
+    // tell the frontend so the Browser tab can show its screencast.
+    if (toolResult?.liveSessionId) {
+      sendEvent({
+        type: 'live_browser',
+        sessionId: toolResult.liveSessionId,
+        url: toolResult.liveSessionUrl || mapped.detail,
+      });
+    }
     if (['write_to_file', 'fileWrite', 'replace_file_content', 'fileEdit', 'multi_replace_file_content'].includes(callName)) {
       const fp = (toolResult?.cleanPath || (toolResult?.path || mapped.filePath || '').replace(/^\/+/, '')).trim();
       if (fp) {
@@ -1161,8 +1210,8 @@ async function executeToolWithLiveEvents(
   return toolResult;
 }
 
-// STEP 4 (P0): KNOWN_TOOL_NAMES deliberately still covers ALL 98
-// serverTools, not just the 81 core tools. It gates the TEXT-JSON fallback
+// STEP 4 (P0): KNOWN_TOOL_NAMES deliberately still covers ALL 103
+// serverTools, not just the 86 core tools. It gates the TEXT-JSON fallback
 // (extractAndStripTextToolCalls), where the model may name a tool the
 // declarations did not offer — the OpenAI path already behaved this way,
 // and the 17 non-core tools keep working executors. Only the native
@@ -1172,7 +1221,7 @@ const KNOWN_TOOL_NAMES = new Set(
 );
 
 // STEP 4 (P0): the OpenAI path's tool set is the shared CORE_TOOL_NAMES
-// (geminiService.ts) — the Gemini path now sends exactly the same 81.
+// (geminiService.ts) — the Gemini path now sends exactly the same 86.
 const OPENAI_CORE_TOOL_NAMES = CORE_TOOL_NAMES;
 
 interface PendingQuestionEntry {
@@ -1865,6 +1914,11 @@ export async function streamOpenAICompatible(
   const maxRounds = allowTools ? Math.max(1, 16 - (checkpoint?.roundsCompleted ?? 0)) : 1;
   for (let round = 0; round < maxRounds; round++) {
     if (checkpoint) checkpoint.roundsCompleted++;
+    // Take over / Stop: never issue another tool call after the user stopped the turn.
+    if (isTurnCancelled(execCtx.sessionId)) {
+      sendEvent({ type: 'action', action: '⏹ Turn stopped — you took over the browser.' });
+      break;
+    }
     await paceAndTrackKeyRound(trackedKey, round, sendEvent);
     noteModelAttempt(targetModel, trackedKey?.id);
     // STEP 15 (c): the final round is the summary round — like the Gemini
@@ -2375,6 +2429,9 @@ The server will execute it immediately and send back the result so you can conti
   // throw so the outer loop rotates to the next key/model and, when the
   // whole chain is exhausted, the friendly `!succeeded` error is sent.
   if (!committedText.trim()) {
+    // A stop is not a failure: the user took over, so return a short note
+    // instead of throwing (which would rotate keys and retry the turn).
+    if (isTurnCancelled(execCtx.sessionId)) return '⏹ Turn stopped — you took over the browser.';
     throw new Error('The model returned an empty response (no text produced).');
   }
   recordModelSuccess(targetModel);
@@ -2409,7 +2466,7 @@ export async function runGeminiAgentLoop(
       systemInstruction,
       // STEP 10 (P1): cap per-round output — see AGENT_LOOP_MAX_OUTPUT_TOKENS.
       maxOutputTokens: AGENT_LOOP_MAX_OUTPUT_TOKENS,
-      // STEP 4 (P0): offer only the 81 core tools, never all 98
+      // STEP 4 (P0): offer only the 86 core tools, never all 103
       // serverTools — same set the OpenAI-compatible loop sends.
       ...(allowTools ? { tools: [{ functionDeclarations: filterCoreTools(serverTools) }] } : {}),
     },
@@ -2451,6 +2508,11 @@ export async function runGeminiAgentLoop(
 
   for (let round = 0; round < maxRounds; round++) {
     if (checkpoint) checkpoint.roundsCompleted++;
+    // Take over / Stop: never issue another tool call after the user stopped the turn.
+    if (isTurnCancelled(execCtx.sessionId)) {
+      sendEvent({ type: 'action', action: '⏹ Turn stopped — you took over the browser.' });
+      break;
+    }
     await paceAndTrackKeyRound(trackedKey, round, sendEvent);
     // STEP 4 (P0): the final round is the summary round — the model only
     // writes its closing text, and any tool call it made here would be
@@ -2556,7 +2618,7 @@ export async function runGeminiAgentLoop(
   // Usage ledger (aggregate for the direct-Gemini loop). STEP 15 (b):
   // provider-reported usage when the stream carried usageMetadata
   // (estimated: false); otherwise an estimate that COUNTS the tool-schema
-  // cost via toolsSchemaTokensEstimate (the 81 core declarations are sent
+  // cost via toolsSchemaTokensEstimate (the 86 core declarations are sent
   // as input tokens on every round that offers tools).
   if (usageLedger && committedText) {
     const schemaTokens = toolsSchemaTokensEstimate(JSON.stringify(filterCoreTools(serverTools)).length);
@@ -2570,6 +2632,9 @@ export async function runGeminiAgentLoop(
   // empty reply is a failure, not a success. Throw so the outer loop
   // rotates to the next key/model instead of sending an empty `done`.
   if (!committedText.trim()) {
+    // A stop is not a failure: the user took over, so return a short note
+    // instead of throwing (which would rotate keys and retry the turn).
+    if (isTurnCancelled(execCtx.sessionId)) return '⏹ Turn stopped — you took over the browser.';
     throw new Error('The model returned an empty response (no text produced).');
   }
   recordModelSuccess(targetModel);
@@ -2660,8 +2725,17 @@ export async function handleOrchestratedChat(
     try { res.write(': ping\n\n'); } catch { /* client gone — 'close' clears below */ }
   }, 15000);
   heartbeat.unref?.();
-  res.on('finish', () => clearInterval(heartbeat));
-  res.on('close', () => clearInterval(heartbeat));
+  // Take over / Stop: if the client disconnects mid-turn (the frontend
+  // aborts its fetch when the user hits Stop / Take over), the turn is
+  // cancelled so the loops stop issuing tool calls at the next round
+  // boundary. 'finish' fires on a normal res.end() first, so a completed
+  // turn is never marked cancelled by its own 'close'.
+  let responseFinished = false;
+  res.on('finish', () => { responseFinished = true; clearInterval(heartbeat); });
+  res.on('close', () => {
+    clearInterval(heartbeat);
+    if (!responseFinished) cancelTurn((req as any)?.sessionId || '');
+  });
 
   const sendEvent = (data: any) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -2685,6 +2759,9 @@ export async function handleOrchestratedChat(
     imageMime,
     bypassCache = false
   } = req;
+  // A fresh turn starts un-cancelled — a previous turn's stop must never
+  // leak into this one.
+  clearTurnCancellation(sessionId);
   const messages = Array.isArray(rawMessages) ? rawMessages : [];
   if (messages.length === 0) {
     sendEvent({

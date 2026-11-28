@@ -41,6 +41,11 @@ export interface ChatAIOptions {
   onUsage?: (usage: any) => void;
   /** Multi-agent team status (planner/coder/reviewer/tester). */
   onAgentStatus?: (status: { agent: string; status: string; detail?: string }) => void;
+  /** AbortSignal for the Stop button / Browser-tab Take over — aborting
+   * the fetch also cancels the turn server-side (see /api/gemini/cancel). */
+  signal?: AbortSignal;
+  /** Fired when an agent tool opens/uses a shared live browser session. */
+  onLiveBrowser?: (info: { sessionId: string; url?: string }) => void;
 }
 
 export async function chatWithAI(
@@ -66,6 +71,7 @@ export async function chatWithAI(
     headers: {
       'Content-Type': 'application/json',
     },
+    signal: options?.signal,
     body: JSON.stringify({
       // STEP 3 (P0): send only the last N turns — the whole conversation
       // used to go over the wire (and into the model) every turn.
@@ -193,6 +199,12 @@ export async function chatWithAI(
         case 'preview_ready':
           if (event.url) {
             onPreviewReady(event.url, event.html, event.sessionId || sessionId);
+          }
+          break;
+
+        case 'live_browser':
+          if (event.sessionId && options?.onLiveBrowser) {
+            options.onLiveBrowser({ sessionId: event.sessionId, url: event.url });
           }
           break;
 

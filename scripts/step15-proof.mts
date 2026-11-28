@@ -104,7 +104,7 @@ const schemaUses = (orchSrc.match(/toolsSchemaTokensEstimate\(/g) || []).length;
 assert.ok(schemaUses >= 2, `schema estimate must be wired on both loops, found ${schemaUses} call sites`);
 const routerSrc = await fs.readFile(new URL('../server/router/index.ts', import.meta.url), 'utf-8');
 assert.ok(!/^\s*recordUsage\(model, 0, 0\);/m.test(routerSrc), 'router must no longer record (model, 0, 0)');
-console.log(`(b) toolsSchemaTokensEstimate wired on both loops: 81 core tools = ~${schemaTokens} tokens/round`);
+console.log(`(b) toolsSchemaTokensEstimate wired on both loops: 86 core tools = ~${schemaTokens} tokens/round`);
 
 // --- (a) Checkpoint: Gemini turn writes a file, 429s, resumes --------------
 const checkpoint = newTurnCheckpoint();
@@ -226,8 +226,8 @@ try {
 assert.ok(oaText.includes('Final summary text.'), `OA loop must return the final text, got: ${oaText.slice(0, 200)}`);
 assert.strictEqual(fetchCalls, 16, `OA loop must run 16 rounds, got ${fetchCalls}`);
 for (let r = 0; r < 15; r++) {
-  assert.ok(Array.isArray(fetchBodies[r].tools) && fetchBodies[r].tools.length === 81,
-    `round ${r} must send the 81 tools, got ${fetchBodies[r].tools?.length}`);
+  assert.ok(Array.isArray(fetchBodies[r].tools) && fetchBodies[r].tools.length === 86,
+    `round ${r} must send the 86 tools, got ${fetchBodies[r].tools?.length}`);
 }
 assert.ok(!('tools' in fetchBodies[15]), `final round must send NO tools, got keys: ${Object.keys(fetchBodies[15]).join(', ')}`);
 assert.ok(!('tool_choice' in fetchBodies[15]), 'final round must not set tool_choice either');
@@ -242,7 +242,7 @@ const step = oaLedger.steps[0];
 assert.strictEqual(step.estimated, false, 'final-round ledger step must be provider-reported, not estimated');
 assert.strictEqual(step.promptTokens, 200, `final-round prompt tokens must be the real 200, got ${step.promptTokens}`);
 assert.strictEqual(step.completionTokens, 10, `final-round completion tokens must be the real 10, got ${step.completionTokens}`);
-console.log(`(c) OA loop: rounds 0-14 sent 81 tools, final round 15 sent NO tools; (b) ledger step is real usage 200/10, estimated=false`);
+console.log(`(c) OA loop: rounds 0-14 sent 86 tools, final round 15 sent NO tools; (b) ledger step is real usage 200/10, estimated=false`);
 
 // --- (a) OA checkpoint resume: a second drive reuses the messages --------
 const resumeBodies: any[] = [];

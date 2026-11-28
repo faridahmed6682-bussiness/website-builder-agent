@@ -13,7 +13,7 @@ import { Octokit } from 'octokit';
 import AdmZip from 'adm-zip';
 import { pushFilesToGitHub, ensureRepo, getGitHubLogin, resolveGitHubToken, sanitizeRepoPath } from './githubPush.ts';
 import { getGitHubConnection } from './githubAuth.ts';
-import { runBrowseTask, runBrowseJob, getScreenshot, resumeBrowseJob, isWorkerConfigured } from './browserWorker.ts';
+import { runBrowseTask, runBrowseJob, getScreenshot, resumeBrowseJob, isWorkerConfigured, startLiveSession, liveAction, liveInput, getLiveFrame } from './browserWorker.ts';
 import { chatOnce, codingChain } from './llmClient.ts';
 import { verifyLive } from './modelChain.ts';
 import { loadStore, saveStoreSoon, newId, startNexusScheduler, onReminder, onWatchHit, type VectorEntry } from './nexusStore.ts';
@@ -729,6 +729,43 @@ export const nexusTools: FunctionDeclaration[] = [
     parameters: { type: Type.OBJECT, properties: {
       jobId: S('Paused job id from browse_job.'),
     }, required: ['jobId'] },
+  },
+  {
+    name: 'browser_goto',
+    description: 'Open a URL in the shared live browser page (starts a live session on first use in a turn; later calls in the same turn reuse it). The user watches the same page live in the Browser tab, so narrate what you are doing there. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
+    parameters: { type: Type.OBJECT, properties: {
+      url: S('URL to open in the live browser (required).'),
+    }, required: ['url'] },
+  },
+  {
+    name: 'browser_click',
+    description: 'Click in the shared live browser page (browser_goto first). Coordinates are CSS pixels in the page viewport; pass a selector instead when the element is easier to name than to point at. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
+    parameters: { type: Type.OBJECT, properties: {
+      x: I('Viewport x coordinate in CSS pixels.'),
+      y: I('Viewport y coordinate in CSS pixels.'),
+      selector: S('Optional CSS selector to click instead of coordinates.'),
+      button: S('Mouse button: left (default) | right | middle.'),
+    }, required: [] },
+  },
+  {
+    name: 'browser_type',
+    description: 'Type text into the shared live browser page (browser_goto first) — focuses the selector first when given, otherwise types into the currently focused field. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
+    parameters: { type: Type.OBJECT, properties: {
+      text: S('Text to type.'),
+      selector: S('Optional CSS selector of the field to type into.'),
+    }, required: ['text'] },
+  },
+  {
+    name: 'browser_press_key',
+    description: 'Press a key in the shared live browser page (browser_goto first): Enter, Tab, Escape, ArrowDown, ArrowUp, PageDown, Backspace, etc. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
+    parameters: { type: Type.OBJECT, properties: {
+      key: S('Key name, e.g. "Enter", "Tab", "Escape", "ArrowDown".'),
+    }, required: ['key'] },
+  },
+  {
+    name: 'browser_screenshot',
+    description: 'Capture the current frame of the shared live browser page (browser_goto first). The frame is shown to the user in the Browser tab; the result confirms the capture and its size. For a vision answer about a page, use browse_vision instead. Needs BROWSER_WORKER_URL + BROWSER_WORKER_KEY.',
+    parameters: { type: Type.OBJECT, properties: {}, required: [] },
   },
   {
     name: 'gmail_list',
@@ -1583,6 +1620,92 @@ async function execBrowseResume(args: any): Promise<any> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Live browser tools — one shared page per turn (execCtx.liveSessionId).
+// The same session is what the user's Browser tab watches; the frontend
+// learns the session id from the tool result (liveSessionId) via the
+// orchestrator's `live_browser` SSE event.
+// ---------------------------------------------------------------------------
+type LiveExecCtx = { sessionId?: string; liveSessionId?: string; liveSessionUrl?: string };
+
+function requireLiveSession(execCtx?: LiveExecCtx): string | null {
+  return execCtx?.liveSessionId || null;
+}
+
+async function execBrowserGoto(args: any, execCtx?: LiveExecCtx): Promise<any> {
+  const url = String(args.url || '').trim();
+  if (!url) return { error: 'browser_goto needs a url.' };
+  try {
+    const existing = requireLiveSession(execCtx);
+    if (existing) {
+      await liveAction(existing, 'goto', { url });
+      if (execCtx) execCtx.liveSessionUrl = url;
+      return { success: true, message: `Navigated the live browser to ${url}.`, liveSessionId: existing, liveSessionUrl: url };
+    }
+    const session = await startLiveSession(url);
+    if (execCtx) { execCtx.liveSessionId = session.id; execCtx.liveSessionUrl = url; }
+    return { success: true, message: `Opened ${url} in the live browser (session ${session.id}). The user can watch it in the Browser tab — narrate what you do there.`, liveSessionId: session.id, liveSessionUrl: url };
+  } catch (err: any) {
+    return { error: err.message || String(err) };
+  }
+}
+
+async function execBrowserClick(args: any, execCtx?: LiveExecCtx): Promise<any> {
+  const id = requireLiveSession(execCtx);
+  if (!id) return { error: 'No live browser session yet — call browser_goto with a url first.' };
+  try {
+    if (args.selector) {
+      await liveInput(id, { type: 'click', selector: String(args.selector), button: String(args.button || 'left') });
+      return { success: true, message: `Clicked ${args.selector} in the live browser.`, liveSessionId: id };
+    }
+    const x = Number(args.x);
+    const y = Number(args.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return { error: 'browser_click needs x + y viewport coordinates (or a selector).' };
+    await liveInput(id, { type: 'click', x, y, button: String(args.button || 'left') });
+    return { success: true, message: `Clicked (${x}, ${y}) in the live browser.`, liveSessionId: id };
+  } catch (err: any) {
+    return { error: err.message || String(err) };
+  }
+}
+
+async function execBrowserType(args: any, execCtx?: LiveExecCtx): Promise<any> {
+  const id = requireLiveSession(execCtx);
+  if (!id) return { error: 'No live browser session yet — call browser_goto with a url first.' };
+  const text = String(args.text ?? '');
+  if (!text) return { error: 'browser_type needs text.' };
+  try {
+    await liveInput(id, { type: 'type', text, ...(args.selector ? { selector: String(args.selector) } : {}) });
+    return { success: true, message: `Typed ${text.length} chars in the live browser.`, liveSessionId: id };
+  } catch (err: any) {
+    return { error: err.message || String(err) };
+  }
+}
+
+async function execBrowserPressKey(args: any, execCtx?: LiveExecCtx): Promise<any> {
+  const id = requireLiveSession(execCtx);
+  if (!id) return { error: 'No live browser session yet — call browser_goto with a url first.' };
+  const key = String(args.key || '').trim();
+  if (!key) return { error: 'browser_press_key needs a key (e.g. "Enter").' };
+  try {
+    await liveInput(id, { type: 'key', key });
+    return { success: true, message: `Pressed ${key} in the live browser.`, liveSessionId: id };
+  } catch (err: any) {
+    return { error: err.message || String(err) };
+  }
+}
+
+async function execBrowserScreenshot(args: any, execCtx?: LiveExecCtx): Promise<any> {
+  const id = requireLiveSession(execCtx);
+  if (!id) return { error: 'No live browser session yet — call browser_goto with a url first.' };
+  try {
+    const frame = await getLiveFrame(id);
+    const size = frame.width && frame.height ? ` (${frame.width}x${frame.height})` : '';
+    return { success: true, message: `Captured the current live browser frame${size} — it is visible in the Browser tab.`, liveSessionId: id };
+  } catch (err: any) {
+    return { error: err.message || String(err) };
+  }
+}
+
 async function execGoogle(args: any, kind: string): Promise<any> {
   try {
     switch (kind) {
@@ -1788,7 +1911,7 @@ export function wireNexusScheduler(): void {
 export async function executeNexusTool(
   name: string,
   args: any,
-  execCtx?: { sessionId?: string },
+  execCtx?: LiveExecCtx,
 ): Promise<any> {
   try {
     switch (name) {
@@ -1821,6 +1944,11 @@ export async function executeNexusTool(
       case 'browse_job': return execBrowseJob(args);
       case 'browse_vision': return execBrowseVision(args);
       case 'browse_resume': return execBrowseResume(args);
+      case 'browser_goto': return execBrowserGoto(args, execCtx);
+      case 'browser_click': return execBrowserClick(args, execCtx);
+      case 'browser_type': return execBrowserType(args, execCtx);
+      case 'browser_press_key': return execBrowserPressKey(args, execCtx);
+      case 'browser_screenshot': return execBrowserScreenshot(args, execCtx);
       case 'gmail_list': case 'gmail_search': case 'gmail_send': case 'gmail_draft':
       case 'calendar_list': case 'calendar_create':
       case 'drive_list': case 'docs_create': case 'docs_read':
