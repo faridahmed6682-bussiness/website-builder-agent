@@ -8,7 +8,7 @@ import { autoDeployWebsiteFromText, getNexusSystemInstruction, prepareGeminiHist
 import { routeTurnModel, turnReasoningEffort, classifyTask, pickPlanningEffort, planningChain, cheapChain, codingChain, chatOnce, chatChain, type PlanningEffort } from "./llmClient.ts";
 import { getRouterApiKey, NO_PROVIDER_KEYS_MESSAGE, NO_PROVIDER_KEYS_CODE } from "../router/keys.ts";
 import { decideIntent, CASUAL_SYSTEM } from "./intentGate.ts";
-import { matchDirectCommand, getCachedToolResult, setCachedToolResult, applyDirectEdit } from "./directTools.ts";
+import { matchDirectCommand, matchBrowserWork, getCachedToolResult, setCachedToolResult, applyDirectEdit } from "./directTools.ts";
 import { buildCacheKey, getBuildCacheEntry, setBuildCacheEntry, normalizeBuildPrompt, BUILD_CACHE_MAX_HTML_BYTES } from "./buildCache.ts";
 import { readUserMemory, saveChatTurn, loadChat, listProjects, listChats } from "./memory.ts";
 import { splitHistoryWindow, ensureRollingSummary, summaryTurn } from "./historyWindow.ts";
@@ -1853,6 +1853,12 @@ export async function streamOpenAICompatible(
   };
   let continuationNudges = 0;
   const requiresImplementation = isActionOrBuildPrompt(rawUserPrompt);
+  // BROWSER WORK: the model works in the live browser, never in workspace
+  // files — so the file-write nudges below must not fire, and the
+  // Planner -> Coder -> Reviewer team must not run. requiresImplementation
+  // stays true on purpose: the PLAN-FIRST guard remains armed as a
+  // backstop, so a stray file-write call is refused instead of executed.
+  const browserWorkMode = Boolean(systemOptions.browserWork);
 
   // Quality-ordered failover state: the turn's task class, the tier it
   // started at, and whether a tier drop has already been surfaced.
@@ -1952,7 +1958,8 @@ export async function streamOpenAICompatible(
   // Performance-loop state (plan-first / verify-then-fix / reviewer)
   // Multi-agent team: Planner -> Coder -> Reviewer -> Tester, sequential,
   // 1 active at a time. Status events drive the TeamStatus UI panel.
-  const teamEnabled = allowTools && requiresImplementation;
+  // Disabled for browser-work turns (no build, no team).
+  const teamEnabled = allowTools && requiresImplementation && !browserWorkMode;
   let teamPlannerDone = false;
   let teamTesterDone = false;
   let lastFailureForLesson = '';
@@ -2344,7 +2351,9 @@ The server will execute it immediately and send back the result so you can conti
       }
       openAiMessages.push({
         role: 'user',
-        content: `[TOOL EXECUTION RESULTS]:\n${JSON.stringify(resultSummaries)}\n\nContinue immediately: implement all requested features directly in workspace files using write_to_file or replace_file_content (never output tool_calls JSON or full code in chat), then verify and summarize.`,
+        content: browserWorkMode
+          ? `[TOOL EXECUTION RESULTS]:\n${JSON.stringify(resultSummaries)}\n\nContinue immediately in the live browser using the browser_* tools (browser_click / browser_type / browser_press_key, or browse_vision to read the page). Do NOT write any files and do NOT call omo_coordinate.`
+          : `[TOOL EXECUTION RESULTS]:\n${JSON.stringify(resultSummaries)}\n\nContinue immediately: implement all requested features directly in workspace files using write_to_file or replace_file_content (never output tool_calls JSON or full code in chat), then verify and summarize.`,
       });
       syncCheckpoint(); // STEP 15 (a): tool results persist for the next key
       continue;
@@ -2374,10 +2383,14 @@ The server will execute it immediately and send back the result so you can conti
     }
 
     // Auto-continuation guard: if model stopped after only planning/setup or narrated next tool calls without writing files yet
+    // Browser-work turns never write files, so the file-write nudge must
+    // not fire — a stalled browser turn is nudged back to the browser.
     const shouldNudge =
       continuationNudges < 2 &&
-      ((requiresImplementation && !didMutateFiles && (calledAnyTool || looksLikeUnfinishedNarration(roundText))) ||
-        looksLikeUnfinishedNarration(roundText));
+      (browserWorkMode
+        ? looksLikeUnfinishedNarration(roundText)
+        : ((requiresImplementation && !didMutateFiles && (calledAnyTool || looksLikeUnfinishedNarration(roundText))) ||
+          looksLikeUnfinishedNarration(roundText)));
 
     if (shouldNudge) {
       continuationNudges++;
@@ -2387,9 +2400,11 @@ The server will execute it immediately and send back the result so you can conti
       });
       openAiMessages.push({
         role: 'user',
-        content: toolsEnabled
-          ? `Do NOT stop or narrate what tool you will call next. Immediately execute the real tool calls now (inspect target file with view_file if needed, write/update features directly in files using write_to_file or replace_file_content, and verify with compile_applet / lint_applet). Never write code or tool_calls JSON in chat.`
-          : `Do NOT stop or narrate. Call the next tool immediately using <tool_call>{"name":"TOOL_NAME","arguments":{...}}</tool_call> to inspect/write the actual workspace files and add all requested features.`,
+        content: browserWorkMode
+          ? `Do NOT stop or narrate what tool you will call next. Continue working in the live browser — use browser_click / browser_type / browser_press_key to do the next step there (or browse_vision to read the page). Do NOT write any files and do NOT call omo_coordinate.`
+          : toolsEnabled
+            ? `Do NOT stop or narrate what tool you will call next. Immediately execute the real tool calls now (inspect target file with view_file if needed, write/update features directly in files using write_to_file or replace_file_content, and verify with compile_applet / lint_applet). Never write code or tool_calls JSON in chat.`
+            : `Do NOT stop or narrate. Call the next tool immediately using <tool_call>{"name":"TOOL_NAME","arguments":{...}}</tool_call> to inspect/write the actual workspace files and add all requested features.`,
       });
       continue;
     }
@@ -2563,6 +2578,12 @@ export async function runGeminiAgentLoop(
   };
   let continuationNudges = 0;
   const requiresImplementation = isActionOrBuildPrompt(rawUserPrompt);
+  // BROWSER WORK: the model works in the live browser, never in workspace
+  // files — so the file-write nudges below must not fire. (The Gemini
+  // loop has no server-side plan-first guard, so the browser-work system
+  // instruction is the guard here — it forbids omo_coordinate and all
+  // file writes for this turn.)
+  const browserWorkMode = Boolean(systemOptions.browserWork);
   // STEP 15 (a): total rounds across key rotations are capped at 16.
   const maxRounds = allowTools ? Math.max(1, 16 - (checkpoint?.roundsCompleted ?? 0)) : 1;
 
@@ -2668,21 +2689,29 @@ export async function runGeminiAgentLoop(
         }
         results.push({ tool: tc.name, result: truncateToolOutput(toolResult) });
       }
-      nextPayload = `[TOOL EXECUTION RESULTS]:\n${JSON.stringify(results)}\n\nContinue immediately using real function calls (write_to_file / replace_file_content) to write all requested code into workspace files. Do NOT output tool_calls JSON in chat.`;
+      nextPayload = browserWorkMode
+        ? `[TOOL EXECUTION RESULTS]:\n${JSON.stringify(results)}\n\nContinue immediately in the live browser using the browser_* tools (browser_click / browser_type / browser_press_key). Do NOT write any files and do NOT call omo_coordinate.`
+        : `[TOOL EXECUTION RESULTS]:\n${JSON.stringify(results)}\n\nContinue immediately using real function calls (write_to_file / replace_file_content) to write all requested code into workspace files. Do NOT output tool_calls JSON in chat.`;
       geminiHasProgress = true;
       if (checkpoint) checkpoint.geminiLastToolResults = JSON.stringify(results).slice(0, 1000);
       syncCheckpoint(); // STEP 15 (a): progress persists for the next key
       continue;
     }
 
+    // Browser-work turns never write files, so the file-write nudge must
+    // not fire — a stalled browser turn is nudged back to the browser.
     const shouldNudge =
       continuationNudges < 2 &&
-      ((requiresImplementation && !didMutateFiles && (calledAnyTool || looksLikeUnfinishedNarration(roundText))) ||
-        looksLikeUnfinishedNarration(roundText));
+      (browserWorkMode
+        ? looksLikeUnfinishedNarration(roundText)
+        : ((requiresImplementation && !didMutateFiles && (calledAnyTool || looksLikeUnfinishedNarration(roundText))) ||
+          looksLikeUnfinishedNarration(roundText)));
 
     if (shouldNudge) {
       continuationNudges++;
-      nextPayload = `Do NOT stop or narrate next steps. Call write_to_file or replace_file_content NOW to write/update the actual files with all requested features, then verify with compile_applet and lint_applet. Never write code or tool_calls JSON in chat.`;
+      nextPayload = browserWorkMode
+        ? `Do NOT stop or narrate next steps. Continue working in the live browser — use browser_click / browser_type / browser_press_key to do the next step there (or browse_vision to read the page). Do NOT write any files and do NOT call omo_coordinate.`
+        : `Do NOT stop or narrate next steps. Call write_to_file or replace_file_content NOW to write/update the actual files with all requested features, then verify with compile_applet and lint_applet. Never write code or tool_calls JSON in chat.`;
       continue;
     }
 
@@ -2980,6 +3009,49 @@ export async function handleOrchestratedChat(
     return;
   }
 
+  // BROWSER WORK — "open the browser and use site X to do Y" (e.g.
+  // "ব্রাউজার খুলে গুগল এআই স্টুডিওকে প্রম্পট দিয়ে ওয়েবসাইট বানাও"):
+  // the work happens IN the browser, not in Nexus's own build pipeline.
+  // The browser is opened FIRST (deterministically, before any model
+  // call), then the turn runs the normal agent loop with a browser-work
+  // system instruction (no omo_coordinate, no file writes). Pure
+  // navigation is already handled by the Tier-0 direct path above, and
+  // plain build requests never match matchBrowserWork, so they are
+  // unaffected. A failed browser open ends the turn with a plain-words
+  // error — it must NOT fall through to the build pipeline, which would
+  // silently do the wrong thing.
+  const browserWork = matchBrowserWork(initialLastMessage);
+  let browserWorkLiveSessionId: string | undefined;
+  if (browserWork) {
+    const isBn = /[\u0980-\u09FF]/.test(initialLastMessage);
+    try {
+      const bwCtx: ToolExecutionContext = { sessionId };
+      const gotoResult: any = await executeServerTool('browser_goto', { url: browserWork.url }, (a) => sendEvent({ type: 'action', action: a }), bwCtx);
+      if (!gotoResult || gotoResult.error || !gotoResult.liveSessionId) {
+        throw new Error(String(gotoResult?.error || 'live browser session could not be started'));
+      }
+      browserWorkLiveSessionId = gotoResult.liveSessionId as string;
+      sendEvent({ type: 'live_browser', sessionId: browserWorkLiveSessionId, url: gotoResult.liveSessionUrl || browserWork.url });
+      sendEvent({ type: 'action', action: isBn ? `🌐 ব্রাউজার খোলা হয়েছে: ${browserWork.site} — সেখানেই কাজ করছি।` : `🌐 Live browser opened: ${browserWork.site} — working there now.` });
+      systemOptions.browserWork = { site: browserWork.site, url: browserWork.url, task: browserWork.action };
+      lastMessage += `\n\n[BROWSER-WORK TURN — the live browser is ALREADY OPEN at ${browserWork.url} (${browserWork.site}). Do the requested work IN that browser with the browser_* tools. Do NOT call omo_coordinate and do NOT write any workspace files.]`;
+    } catch (err: any) {
+      const why = String(err?.message || err).slice(0, 300);
+      const errText = isBn
+        ? `⚠️ ব্রাউজার খুলতে পারিনি: ${why}`
+        : `⚠️ Could not open the browser: ${why}`;
+      sendEvent({ type: 'text', text: errText });
+      finalAssistantText = errText;
+      sendEvent({ type: 'done', fullText: errText, direct: true, apiCalls: 0 });
+      await saveChatTurn(sessionId || 'default', initialLastMessage, errText).catch(() => {});
+      const totals = usageTotals(usageLedger);
+      recordTurnUsage(sessionId || 'default', totals);
+      sendEvent({ type: 'usage_summary', usage: totals });
+      res.end();
+      return;
+    }
+  }
+
   // STEP 13 (P1): prompt/build response cache — an exact repeat of a build
   // prompt serves the stored build with ZERO model calls: this lookup runs
   // BEFORE the intent gate and the router, so a hit never reaches either.
@@ -2987,9 +3059,11 @@ export async function handleOrchestratedChat(
   // builds are excluded (the vision brief changes the effective prompt but
   // is not part of the key), and `bypassCache` ("rebuild anyway") skips
   // the lookup while still storing the fresh build afterwards.
+  // A browser-work turn must never serve a cached workspace build — the
+  // user asked for the work to happen in the browser.
   const isBuildTurn = isActionOrBuildPrompt(initialLastMessage);
   const cacheModelKey = explicitGeminiModel ?? 'auto';
-  const buildCacheKeyValue = isBuildTurn && !imageBase64
+  const buildCacheKeyValue = isBuildTurn && !imageBase64 && !browserWork
     ? buildCacheKey(initialLastMessage, cacheModelKey, 'coding')
     : null;
   if (buildCacheKeyValue && !bypassCache) {
@@ -3028,8 +3102,9 @@ export async function handleOrchestratedChat(
   // Intent gate: tools/code ONLY when the message actually needs them.
   // Local check first, then the cheap gate. Casual messages get ONE direct
   // fast-model answer — no tools, no code, no agent loop.
-  let isConversationalPrompt = isCasualOrConversationalOnly(initialLastMessage);
-  if (!isConversationalPrompt) {
+  // Browser-work turns are tasks by construction — no classification call.
+  let isConversationalPrompt = browserWork ? false : isCasualOrConversationalOnly(initialLastMessage);
+  if (!isConversationalPrompt && !browserWork) {
     const intent = await decideIntent(initialLastMessage, history);
     isConversationalPrompt = intent === 'casual';
   }
@@ -3149,8 +3224,9 @@ export async function handleOrchestratedChat(
   // if the user's request matches any of the registered skills, preload
   // their full instructions into the system prompt so the model follows them
   // without having to call read_skill first. read_skill stays available for
-  // fetching any skill by name at any time.
-  if (!isConversationalPrompt) {
+  // fetching any skill by name at any time. Browser-work turns need no
+  // Nexus build skills — the work happens in the browser, not the workspace.
+  if (!isConversationalPrompt && !browserWork) {
     const matchedSkills = matchSkillsForPrompt(initialLastMessage, 3);
     if (matchedSkills.length > 0) {
       systemOptions.matchedSkills = matchedSkills
@@ -3163,8 +3239,9 @@ export async function handleOrchestratedChat(
     }
   }
 
-  // Inject active workspace & session preview context ONLY for non-casual prompts (saves tokens and prevents tools on "Hi")
-  if (!isConversationalPrompt) {
+  // Inject active workspace & session preview context ONLY for non-casual prompts (saves tokens and prevents tools on "Hi"). Browser-work turns
+  // must not see it — it tells the model to inspect/modify workspace files.
+  if (!isConversationalPrompt && !browserWork) {
     try {
       const contextNotes: string[] = [];
       for (const candidate of Array.from(new Set([sessionPreviewTarget, 'projects/index.html']))) {
@@ -3187,10 +3264,12 @@ When modifying or adding features to the current session app, FIRST inspect the 
     } catch {}
   }
 
-  // Auto-detect reference website URLs and scrape their structure, layout & copy
+  // Auto-detect reference website URLs and scrape their structure, layout & copy.
+  // Skipped for browser-work turns: the URL there is the site to WORK IN,
+  // not a reference to build a similar site from.
   const urlRegex = /(https?:\/\/[^\s<>'"]+)/gi;
   const foundUrls = initialLastMessage.match(urlRegex);
-  if (foundUrls && foundUrls.length > 0) {
+  if (foundUrls && foundUrls.length > 0 && !browserWork) {
     const rawTargetUrl = foundUrls[0].replace(/[),.]+$/, '');
     sendEvent({
       type: "action",
@@ -3408,12 +3487,25 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
           ? (req as any).liveTabs.filter((t: any) => t && typeof t.id === 'string').slice(0, 4)
               .map((t: any) => ({ id: t.id, url: typeof t.url === 'string' ? t.url : undefined }))
           : [];
-        const seededActive = seededTabs.find((t: any) => t.id === (req as any).activeLiveTabId) || seededTabs[0];
+        // BROWSER WORK: the browser was opened before the loop — every
+        // browser_* tool call in this turn reuses that same session, so
+        // the model never starts a second one (and never sees "no live
+        // browser session yet"). It becomes the active tab (prepended to
+        // the seeded list when not already there).
+        const liveSessions = browserWorkLiveSessionId
+          ? (seededTabs.some((t: any) => t.id === browserWorkLiveSessionId)
+              ? seededTabs
+              : [{ id: browserWorkLiveSessionId, url: browserWork?.url }, ...seededTabs].slice(0, 4))
+          : seededTabs;
+        const seededActive = liveSessions.find((t: any) => t.id === (req as any).activeLiveTabId) || liveSessions[0];
+        const activeTab = browserWorkLiveSessionId
+          ? { id: browserWorkLiveSessionId, url: browserWork?.url }
+          : seededActive;
         return {
           sessionId,
-          liveSessions: seededTabs,
-          liveSessionId: seededActive?.id,
-          liveSessionUrl: seededActive?.url,
+          liveSessions,
+          liveSessionId: activeTab?.id,
+          liveSessionUrl: activeTab?.url,
           llmInvoker: invoker,
           onAskQuestion: (questions) => {
             const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
