@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Globe, Hand, Bot, X, RefreshCw, AlertTriangle, MousePointerClick, Keyboard } from 'lucide-react';
+import { Globe, Hand, Bot, X, RefreshCw, AlertTriangle, MousePointerClick, Keyboard, Plus } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export interface LiveBrowserSession {
@@ -7,10 +7,18 @@ export interface LiveBrowserSession {
   url?: string;
 }
 
+/** The worker pool holds 4 browser contexts — a 5th live tab has none. */
+export const MAX_LIVE_TABS = 4;
+
+const POOL_FULL_MSG = 'The live browser already has 4 tabs open — close a tab first, then try again.';
+
 interface LiveBrowserPanelProps {
-  /** Agent-started (or user-started) live session; null = no session yet. */
-  session: LiveBrowserSession | null;
-  onSessionChange: (session: LiveBrowserSession | null) => void;
+  /** Live tabs open in the panel (max 4); [] = no session yet. */
+  tabs: LiveBrowserSession[];
+  /** Which tab is visible. */
+  activeTabId: string | null;
+  onTabsChange: (tabs: LiveBrowserSession[]) => void;
+  onActiveTabChange: (id: string | null) => void;
   /** Called when the user takes over — the parent stops the agent turn. */
   onTakeOver: () => void;
   /** True while an agent turn is running (Send/Stop state). */
@@ -30,17 +38,31 @@ async function postLive(path: string, body: any): Promise<any> {
   return json;
 }
 
+/** Short tab label: the site's hostname, else "Tab N". */
+function tabTitle(tab: LiveBrowserSession, index: number): string {
+  try {
+    const host = new URL(tab.url || '').hostname.replace(/^www\./, '');
+    if (host) return host;
+  } catch { /* fall through */ }
+  return tab.url ? tab.url.slice(0, 18) : `Tab ${index + 1}`;
+}
+
 /**
- * Live Browser tab — a Muse-like screencast of the shared live page.
- * Frames arrive over SSE from /api/browser/live/stream (the server relays
- * the worker's frames); pointer/keyboard input goes back through
- * /api/browser/live/input, scaled to the page viewport. "Take over" pauses
- * the worker session AND stops the agent turn (via onTakeOver); "Give back
- * to agent" resumes the session so the next agent message can drive it.
+ * Live Browser tab — a Muse-like screencast of the shared live pages, now
+ * with up to 4 tabs. Only the ACTIVE tab streams frames (one EventSource
+ * at a time, same load as the old single tab); switching tabs reconnects
+ * the stream and the first frame arrives immediately. Each tab keeps its
+ * own session, URL and Take over state; closing a tab closes its worker
+ * session. "Take over" pauses the active tab's worker session AND stops
+ * the agent turn (via onTakeOver); "Give back to agent" resumes it so the
+ * next agent message can drive it. The agent drives ONE tab at a time —
+ * it acts on a tab, then the next (round-robin), never two at once.
  */
 export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
-  session,
-  onSessionChange,
+  tabs,
+  activeTabId,
+  onTabsChange,
+  onActiveTabChange,
   onTakeOver,
   isAgentRunning,
 }) => {
@@ -48,7 +70,8 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
   const [frameSize, setFrameSize] = useState<{ w: number; h: number } | null>(null);
   const [status, setStatus] = useState<StreamStatus>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [takenOver, setTakenOver] = useState(false);
+  // Take over is per tab — the worker pauses sessions individually.
+  const [takenOverById, setTakenOverById] = useState<Record<string, boolean>>({});
   const [urlInput, setUrlInput] = useState('');
   const [typeText, setTypeText] = useState('');
   const [starting, setStarting] = useState(false);
@@ -57,20 +80,28 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
   const imgRef = useRef<HTMLImageElement>(null);
   const hadFrameRef = useRef(false);
 
-  // (Re)connect the screencast stream whenever the session changes.
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const takenOver = activeTabId ? Boolean(takenOverById[activeTabId]) : false;
+
+  // Keep the URL bar in step with the active tab (agent navigations too).
+  const activeTabUrl = activeTab?.url || '';
+  useEffect(() => {
+    setUrlInput(activeTabUrl);
+  }, [activeTabId, activeTabUrl]);
+
+  // (Re)connect the screencast stream for the ACTIVE tab only, whenever it
+  // changes. Inactive tabs fetch no frames.
   useEffect(() => {
     setFrame(null);
     setFrameSize(null);
     hadFrameRef.current = false;
-    setTakenOver(false);
     setErrorMsg(null);
-    if (!session?.id) {
+    if (!activeTabId) {
       setStatus('idle');
       return;
     }
     setStatus('connecting');
-    setUrlInput(session.url || '');
-    const es = new EventSource(`/api/browser/live/stream?sessionId=${encodeURIComponent(session.id)}`);
+    const es = new EventSource(`/api/browser/live/stream?sessionId=${encodeURIComponent(activeTabId)}`);
     es.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
@@ -97,16 +128,16 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
       }
     };
     return () => es.close();
-  }, [session?.id]);
+  }, [activeTabId]);
 
   const sendInput = useCallback(async (event: Record<string, any>) => {
-    if (!session?.id) return;
+    if (!activeTabId) return;
     try {
-      await postLive('input', { sessionId: session.id, ...event });
+      await postLive('input', { sessionId: activeTabId, ...event });
     } catch (err) {
       console.warn('Live browser input failed:', err);
     }
-  }, [session?.id]);
+  }, [activeTabId]);
 
   // While the agent is driving, only Take over unlocks user input — the
   // user's clicks must never race the agent's tool calls on the same page.
@@ -114,7 +145,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
 
   // Scale a click inside the displayed frame to page-viewport coordinates.
   const handleFrameMouseDown = (e: React.MouseEvent) => {
-    if (!session?.id || userInputLocked) return;
+    if (!activeTabId || userInputLocked) return;
     const rect = frameWrapRef.current?.getBoundingClientRect();
     const img = imgRef.current;
     if (!rect || !img) return;
@@ -126,14 +157,14 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
   };
 
   const handleFrameKeyDown = (e: React.KeyboardEvent) => {
-    if (!session?.id || userInputLocked) return;
+    if (!activeTabId || userInputLocked) return;
     // The focused frame is a remote desktop: keys go to the live page.
     e.preventDefault();
     void sendInput({ type: 'key', key: e.key });
   };
 
   const handleWheel = (e: React.WheelEvent) => {
-    if (!session?.id || userInputLocked) return;
+    if (!activeTabId || userInputLocked) return;
     // Include the pointer position — the worker wheels at x/y.
     const rect = frameWrapRef.current?.getBoundingClientRect();
     const img = imgRef.current;
@@ -154,12 +185,14 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
     setStarting(true);
     setErrorMsg(null);
     try {
-      if (session?.id) {
-        await postLive('action', { sessionId: session.id, action: 'goto', url });
-        onSessionChange({ id: session.id, url });
+      if (activeTab) {
+        await postLive('action', { sessionId: activeTab.id, action: 'goto', url });
+        onTabsChange(tabs.map((t) => (t.id === activeTab.id ? { ...t, url } : t)));
       } else {
         const started = await postLive('start', { url });
-        onSessionChange({ id: started.sessionId, url: started.url || url });
+        const tab = { id: started.sessionId, url: started.url || url };
+        onTabsChange([...tabs, tab]);
+        onActiveTabChange(tab.id);
       }
     } catch (err: any) {
       setErrorMsg(err?.message || 'Could not open that URL in the live browser.');
@@ -168,44 +201,76 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
     }
   };
 
+  const handleNewTab = async () => {
+    // Refuse the 5th tab up front — the worker pool holds 4 contexts.
+    if (tabs.length >= MAX_LIVE_TABS) {
+      setErrorMsg(POOL_FULL_MSG);
+      return;
+    }
+    setStarting(true);
+    setErrorMsg(null);
+    try {
+      const url = urlInput.trim() || undefined;
+      const started = await postLive('start', { ...(url ? { url } : {}) });
+      const tab = { id: started.sessionId, url: started.url || url };
+      onTabsChange([...tabs, tab]);
+      onActiveTabChange(tab.id);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Could not open a new live tab.');
+    } finally {
+      setStarting(false);
+    }
+  };
+
   const handleTakeOver = async () => {
-    if (!session?.id) return;
+    if (!activeTabId) return;
     setBusy(true);
     try {
       // Pause the worker session so the agent cannot act on it while the
       // user drives. If the worker does not support pause yet, the agent
       // turn is still stopped below — that is the part that must not fail.
-      await postLive('action', { sessionId: session.id, action: 'pause' });
+      await postLive('action', { sessionId: activeTabId, action: 'pause' });
     } catch (err) {
       console.warn('Live browser pause failed (agent turn is still stopped):', err);
     } finally {
       setBusy(false);
     }
-    setTakenOver(true);
+    setTakenOverById((prev) => ({ ...prev, [activeTabId]: true }));
     onTakeOver();
   };
 
   const handleGiveBack = async () => {
-    if (!session?.id) return;
+    if (!activeTabId) return;
     setBusy(true);
     try {
-      await postLive('action', { sessionId: session.id, action: 'resume' });
+      await postLive('action', { sessionId: activeTabId, action: 'resume' });
     } catch (err) {
       console.warn('Live browser resume failed:', err);
     } finally {
       setBusy(false);
     }
-    setTakenOver(false);
+    setTakenOverById((prev) => ({ ...prev, [activeTabId]: false }));
   };
 
-  const handleClose = async () => {
-    if (!session?.id) return;
+  const handleCloseTab = async (id: string) => {
     try {
-      await postLive('close', { sessionId: session.id });
+      await postLive('close', { sessionId: id });
     } catch {
       /* closing a dead session is fine */
     }
-    onSessionChange(null);
+    const remaining = tabs.filter((t) => t.id !== id);
+    setTakenOverById((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    onTabsChange(remaining);
+    if (activeTabId === id) {
+      // Activate the tab to the left, else the new first tab, else none.
+      const idx = tabs.findIndex((t) => t.id === id);
+      const nextActive = remaining[Math.max(0, idx - 1)] || null;
+      onActiveTabChange(nextActive ? nextActive.id : null);
+    }
   };
 
   const handleType = async () => {
@@ -216,7 +281,47 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-[#0b0e14]">
-      {/* Toolbar: URL bar + takeover controls */}
+      {/* Tab strip: one chip per live tab + new-tab button (max 4). */}
+      <div className="flex items-center gap-1 px-2 pt-2 flex-shrink-0 overflow-x-auto">
+        {tabs.map((tab, i) => {
+          const isActive = tab.id === activeTabId;
+          return (
+            <div
+              key={tab.id}
+              onClick={() => onActiveTabChange(tab.id)}
+              className={cn(
+                "flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-t-lg text-xs cursor-pointer border border-b-0 flex-shrink-0",
+                isActive ? "bg-[#131722] text-white border-slate-700" : "text-slate-400 hover:text-slate-200 border-transparent"
+              )}
+              title={tab.url || `Tab ${i + 1}`}
+            >
+              <Globe className="w-3 h-3 flex-shrink-0" />
+              <span className="max-w-[110px] truncate">{tabTitle(tab, i)}</span>
+              {takenOverById[tab.id] && <Hand className="w-3 h-3 text-amber-400 flex-shrink-0" />}
+              <button
+                onClick={(e) => { e.stopPropagation(); void handleCloseTab(tab.id); }}
+                className="p-0.5 text-slate-500 hover:text-white rounded transition-colors cursor-pointer"
+                title="Close this tab"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          );
+        })}
+        <button
+          onClick={() => void handleNewTab()}
+          disabled={starting || tabs.length >= MAX_LIVE_TABS}
+          className="p-1.5 text-slate-400 hover:text-white disabled:opacity-40 rounded-lg transition-colors cursor-pointer flex-shrink-0"
+          title={tabs.length >= MAX_LIVE_TABS ? POOL_FULL_MSG : 'Open a new live tab'}
+        >
+          <Plus className="w-3.5 h-3.5" />
+        </button>
+        {tabs.length >= MAX_LIVE_TABS && (
+          <span className="text-[11px] text-slate-500 ml-1 flex-shrink-0">4 tabs max — close one to open another</span>
+        )}
+      </div>
+
+      {/* Toolbar: URL bar + takeover controls (for the active tab) */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-800 flex-shrink-0 flex-wrap">
         <Globe className="w-4 h-4 text-slate-400 flex-shrink-0" />
         <input
@@ -232,9 +337,9 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
           disabled={starting || !urlInput.trim()}
           className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
         >
-          {starting ? 'Opening…' : session ? 'Go' : 'Start browsing'}
+          {starting ? 'Opening…' : activeTab ? 'Go' : 'Start browsing'}
         </button>
-        {session && !takenOver && (
+        {activeTab && !takenOver && (
           <button
             onClick={() => void handleTakeOver()}
             disabled={busy}
@@ -245,7 +350,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
             Take over
           </button>
         )}
-        {session && takenOver && (
+        {activeTab && takenOver && (
           <button
             onClick={() => void handleGiveBack()}
             disabled={busy}
@@ -256,16 +361,16 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
             Give back to agent
           </button>
         )}
-        {session && (
+        {activeTab && (
           <button
-            onClick={() => void handleClose()}
+            onClick={() => void handleCloseTab(activeTab.id)}
             className="p-1.5 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
-            title="Close live session"
+            title="Close this live tab"
           >
             <X className="w-4 h-4" />
           </button>
         )}
-        {session && (
+        {activeTab && (
           <span className={cn(
             "inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-semibold",
             status === 'live' ? "bg-emerald-500/10 text-emerald-400" :
@@ -278,7 +383,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
         )}
       </div>
 
-      {/* Screencast */}
+      {/* Screencast (active tab only) */}
       <div
         ref={frameWrapRef}
         tabIndex={0}
@@ -287,25 +392,26 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
         onWheel={handleWheel}
         onContextMenu={(e) => e.preventDefault()}
         className="flex-1 min-h-0 flex items-center justify-center overflow-hidden outline-none focus:ring-1 focus:ring-indigo-500/50"
-        title={session ? (takenOver ? 'You are driving — click / type to control the page' : 'Agent is driving — click Take over to drive it yourself') : 'Start a live browser session above'}
+        title={activeTab ? (takenOver ? 'You are driving — click / type to control the page' : 'Agent is driving — click Take over to drive it yourself') : 'Start a live browser session above'}
       >
-        {!session && (
+        {!activeTab && (
           <div className="text-center px-6 max-w-md">
             <MousePointerClick className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-            <p className="text-slate-300 text-sm font-semibold mb-1">No live browser session yet</p>
+            <p className="text-slate-300 text-sm font-semibold mb-1">No live browser tab yet</p>
             <p className="text-slate-500 text-xs leading-relaxed">
-              Ask the agent to open a page (“open example.com in the browser and click through it”),
-              or paste a URL above and start browsing yourself. The agent and you share the same live page.
+              Ask the agent to open pages (“open example.com and wikipedia.org in the browser”),
+              or paste a URL above and start browsing yourself. The agent and you share the same live tabs — up to 4 at once.
+              The agent works one tab at a time and switches between your open tabs as you ask it to.
             </p>
           </div>
         )}
-        {session && status === 'connecting' && !frame && (
+        {activeTab && status === 'connecting' && !frame && (
           <div className="text-center">
             <RefreshCw className="w-6 h-6 text-slate-500 mx-auto mb-2 animate-spin" />
             <p className="text-slate-400 text-xs">Connecting to the live browser…</p>
           </div>
         )}
-        {session && status === 'error' && !frame && (
+        {activeTab && status === 'error' && !frame && (
           <div className="text-center px-6 max-w-md">
             <AlertTriangle className="w-8 h-8 text-rose-400 mx-auto mb-2" />
             <p className="text-slate-300 text-sm font-semibold mb-1">Live stream unavailable</p>
@@ -324,7 +430,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
       </div>
 
       {/* Bottom bar: type box + hints */}
-      {session && (
+      {activeTab && (
         <div className="flex items-center gap-2 px-3 py-2 border-t border-slate-800 flex-shrink-0 flex-wrap">
           <Keyboard className="w-4 h-4 text-slate-400 flex-shrink-0" />
           <input

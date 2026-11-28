@@ -1210,8 +1210,8 @@ async function executeToolWithLiveEvents(
   return toolResult;
 }
 
-// STEP 4 (P0): KNOWN_TOOL_NAMES deliberately still covers ALL 103
-// serverTools, not just the 86 core tools. It gates the TEXT-JSON fallback
+// STEP 4 (P0): KNOWN_TOOL_NAMES deliberately still covers ALL 104
+// serverTools, not just the 87 core tools. It gates the TEXT-JSON fallback
 // (extractAndStripTextToolCalls), where the model may name a tool the
 // declarations did not offer — the OpenAI path already behaved this way,
 // and the 17 non-core tools keep working executors. Only the native
@@ -2466,7 +2466,7 @@ export async function runGeminiAgentLoop(
       systemInstruction,
       // STEP 10 (P1): cap per-round output — see AGENT_LOOP_MAX_OUTPUT_TOKENS.
       maxOutputTokens: AGENT_LOOP_MAX_OUTPUT_TOKENS,
-      // STEP 4 (P0): offer only the 86 core tools, never all 103
+      // STEP 4 (P0): offer only the 87 core tools, never all 104
       // serverTools — same set the OpenAI-compatible loop sends.
       ...(allowTools ? { tools: [{ functionDeclarations: filterCoreTools(serverTools) }] } : {}),
     },
@@ -2618,7 +2618,7 @@ export async function runGeminiAgentLoop(
   // Usage ledger (aggregate for the direct-Gemini loop). STEP 15 (b):
   // provider-reported usage when the stream carried usageMetadata
   // (estimated: false); otherwise an estimate that COUNTS the tool-schema
-  // cost via toolsSchemaTokensEstimate (the 86 core declarations are sent
+  // cost via toolsSchemaTokensEstimate (the 87 core declarations are sent
   // as input tokens on every round that offers tools).
   if (usageLedger && committedText) {
     const schemaTokens = toolsSchemaTokensEstimate(JSON.stringify(filterCoreTools(serverTools)).length);
@@ -2708,6 +2708,12 @@ export async function handleOrchestratedChat(
     imageMime?: string;
     /** STEP 13 (P1): "rebuild anyway" — skip the build-cache lookup for this turn. */
     bypassCache?: boolean;
+    /** Live browser tabs the user has open in the Browser tab (max 4).
+     * Seeded into the turn's execCtx so the agent can drive tabs the user
+     * opened — not only ones it opened itself this turn. */
+    liveTabs?: Array<{ id: string; url?: string }>;
+    /** Which of liveTabs is the active (visible) one in the Browser tab. */
+    activeLiveTabId?: string;
   },
   res: Response
 ) {
@@ -3291,40 +3297,53 @@ BUILD A SIMILAR SITE (INSPIRED-BY, NEVER A COPY):
         { status: 'done' }
       );
 
-      const buildExecCtx = (invoker: (sys: string, usr: string) => Promise<string>): ToolExecutionContext => ({
-        sessionId,
-        llmInvoker: invoker,
-        onAskQuestion: (questions) => {
-          const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-          return new Promise((resolve) => {
-            const timer = setTimeout(() => {
-              if (pendingQuestionResolvers.delete(questionId)) {
-                resolve({ answers: {}, skipped: true, notes: 'Timed out waiting for response.' });
-              }
-            }, 120000);
-            pendingQuestionResolvers.set(questionId, { resolve, timer });
-            res.once('close', () => {
-              if (pendingQuestionResolvers.delete(questionId)) {
-                clearTimeout(timer);
-                resolve({ answers: {}, skipped: true, notes: 'Client disconnected.' });
-              }
+      const buildExecCtx = (invoker: (sys: string, usr: string) => Promise<string>): ToolExecutionContext => {
+        // Multi-tab: seed the turn's live tabs from the Browser tab so the
+        // agent can drive tabs the user opened (not only its own). The
+        // active tab is the one the user is looking at (else the first).
+        const seededTabs = Array.isArray((req as any).liveTabs)
+          ? (req as any).liveTabs.filter((t: any) => t && typeof t.id === 'string').slice(0, 4)
+              .map((t: any) => ({ id: t.id, url: typeof t.url === 'string' ? t.url : undefined }))
+          : [];
+        const seededActive = seededTabs.find((t: any) => t.id === (req as any).activeLiveTabId) || seededTabs[0];
+        return {
+          sessionId,
+          liveSessions: seededTabs,
+          liveSessionId: seededActive?.id,
+          liveSessionUrl: seededActive?.url,
+          llmInvoker: invoker,
+          onAskQuestion: (questions) => {
+            const questionId = `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            return new Promise((resolve) => {
+              const timer = setTimeout(() => {
+                if (pendingQuestionResolvers.delete(questionId)) {
+                  resolve({ answers: {}, skipped: true, notes: 'Timed out waiting for response.' });
+                }
+              }, 120000);
+              pendingQuestionResolvers.set(questionId, { resolve, timer });
+              res.once('close', () => {
+                if (pendingQuestionResolvers.delete(questionId)) {
+                  clearTimeout(timer);
+                  resolve({ answers: {}, skipped: true, notes: 'Client disconnected.' });
+                }
+              });
+              sendEvent({
+                type: 'ask_question',
+                questionId,
+                questions,
+              });
             });
-            sendEvent({
-              type: 'ask_question',
-              questionId,
-              questions,
+          },
+          onAgentStep: (agentStep) => {
+            emitActionStep(sendEvent, agentStep.kind, agentStep.label, agentStep.detail, {
+              id: agentStep.id,
+              status: agentStep.status,
+              durationSec: agentStep.durationSec,
+              isError: agentStep.status === 'error',
             });
-          });
-        },
-        onAgentStep: (agentStep) => {
-          emitActionStep(sendEvent, agentStep.kind, agentStep.label, agentStep.detail, {
-            id: agentStep.id,
-            status: agentStep.status,
-            durationSec: agentStep.durationSec,
-            isError: agentStep.status === 'error',
-          });
-        },
-      });
+          },
+        };
+      };
 
       try {
         if (key.provider === 'gemini') {

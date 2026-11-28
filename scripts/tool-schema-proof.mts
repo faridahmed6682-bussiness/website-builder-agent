@@ -1,7 +1,7 @@
 // Tool-schema proof — mocks/stubs ONLY, no real API keys, no network.
 // Run: npx tsx scripts/tool-schema-proof.mts
 // Proves (Step 4, P0):
-//  1. The Gemini path offers exactly the 86 core tools (was 103) — the same
+//  1. The Gemini path offers exactly the 87 core tools (was 104) — the same
 //     name set the OpenAI-compatible path sends. The 17 dropped tools are
 //     exactly the expected list, and each keeps a live executor (no
 //     capability deleted, only the per-call declaration cost removed).
@@ -54,11 +54,11 @@ const EXPECTED_DROPPED = sorted([
 
 // --- 1. Counts, sets, executors --------------------------------------------
 const allNames = names(serverTools);
-assert.strictEqual(allNames.length, 103, `serverTools should still declare 103 tools, got ${allNames.length}`);
-assert.strictEqual(CORE_TOOL_NAMES.size, 86, `CORE_TOOL_NAMES should hold 86 tools, got ${CORE_TOOL_NAMES.size}`);
+assert.strictEqual(allNames.length, 104, `serverTools should still declare 104 tools, got ${allNames.length}`);
+assert.strictEqual(CORE_TOOL_NAMES.size, 87, `CORE_TOOL_NAMES should hold 87 tools, got ${CORE_TOOL_NAMES.size}`);
 
 const coreDecls = filterCoreTools(serverTools);
-assert.strictEqual(coreDecls.length, 86, `filterCoreTools should keep 86, got ${coreDecls.length}`);
+assert.strictEqual(coreDecls.length, 87, `filterCoreTools should keep 87, got ${coreDecls.length}`);
 assert.deepStrictEqual(sorted(names(coreDecls)), sorted([...CORE_TOOL_NAMES]), 'filtered declarations must equal CORE_TOOL_NAMES');
 
 const dropped = sorted(allNames.filter((n) => !CORE_TOOL_NAMES.has(n)));
@@ -81,7 +81,7 @@ const geminiBefore = estimateTokens(JSON.stringify(serverTools));
 const geminiAfter = estimateTokens(JSON.stringify(coreDecls));
 const openAiTools = toOpenAITools(serverTools);
 const openAiTokens = estimateTokens(JSON.stringify(openAiTools));
-assert.strictEqual(openAiTools.length, 86, `OpenAI path should send 86 tools, got ${openAiTools.length}`);
+assert.strictEqual(openAiTools.length, 87, `OpenAI path should send 87 tools, got ${openAiTools.length}`);
 assert.deepStrictEqual(sorted(openAiTools.map((t: any) => t.function.name)), sorted(names(coreDecls)),
   'Gemini-after and OpenAI name sets must be identical');
 assert.ok(geminiAfter < geminiBefore, 'Gemini schema tokens must drop');
@@ -142,9 +142,9 @@ assert.ok(fullText.includes('test build summary'), `loop should return the final
 assert.strictEqual(sentConfigs.length, 16, `loop should run all 16 rounds, got ${sentConfigs.length}`);
 assert.strictEqual(sentChatConfigs.length, 1, 'one chat should be created');
 
-// Chat-level declarations: exactly the 86 core tools, none dropped.
+// Chat-level declarations: exactly the 87 core tools, none dropped.
 const chatDecls = sentChatConfigs[0]?.tools?.[0]?.functionDeclarations ?? [];
-assert.strictEqual(chatDecls.length, 86, `chat should be created with 86 tools, got ${chatDecls.length}`);
+assert.strictEqual(chatDecls.length, 87, `chat should be created with 87 tools, got ${chatDecls.length}`);
 for (const d of chatDecls) {
   assert.ok(CORE_TOOL_NAMES.has(d.name), `chat offered non-core tool ${d.name}`);
   assert.ok(!EXPECTED_DROPPED.includes(d.name), `chat offered dropped tool ${d.name}`);
@@ -167,6 +167,6 @@ for (const t of executedToolNames) {
   assert.ok(!EXPECTED_DROPPED.includes(t), `loop executed dropped tool ${t}`);
   assert.ok(CORE_TOOL_NAMES.has(t), `loop executed non-core tool ${t}`);
 }
-console.log(`Behavioural: ${sentConfigs.length} rounds; offered tools/round: 86 (rounds 0-14), 0 (final round 15); executed tools: ${[...new Set(executedToolNames)].join(', ')} (no dropped tool offered or executed)`);
+console.log(`Behavioural: ${sentConfigs.length} rounds; offered tools/round: 87 (rounds 0-14), 0 (final round 15); executed tools: ${[...new Set(executedToolNames)].join(', ')} (no dropped tool offered or executed)`);
 
 console.log('tool-schema proof: PASS');
