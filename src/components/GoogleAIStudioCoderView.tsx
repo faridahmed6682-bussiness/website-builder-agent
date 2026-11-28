@@ -229,6 +229,10 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
   // indicators below still use isLoading on its own.
   const isBusy = isLoading || isBackgroundJobRunning;
   const [activeCoderTab, setActiveCoderTab] = useState<'chat' | 'preview' | 'artifacts' | 'browser'>('chat');
+  // Mode menu (2026-11-29): General Assistant now uses this same view, so
+  // the old coding<->general toggle becomes a full 4-mode menu — otherwise
+  // Image Artist / Web Explorer would be unreachable from here.
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   // Inline mini-browser (in-chat): a compact panel above the input showing
   // the SAME live session as the full Browser tab — the user watches the
   // agent work without leaving the chat. Only one view renders at a time,
@@ -691,16 +695,51 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
             </button>
           )}
 
-          {/* Mode Badge */}
-          <button
-            onClick={() => setActiveMode(activeMode === 'coding' ? 'general' : 'coding')}
-            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-full text-[11px] font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/25 hover:bg-indigo-500/20 transition-colors cursor-pointer"
-            title="Switch Mode"
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="hidden sm:inline">Nexus Coder</span>
-            <span className="sm:hidden">Coder</span>
-          </button>
+          {/* Mode Badge — opens the 4-mode menu (General / Coder / Image / Search) */}
+          <div className="relative">
+            <button
+              onClick={() => setModeMenuOpen((v) => !v)}
+              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-full text-[11px] font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/25 hover:bg-indigo-500/20 transition-colors cursor-pointer"
+              title="Switch Mode"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="hidden sm:inline">{activeMode === 'general' ? 'General Assistant' : activeMode === 'coding' ? 'Nexus Coder' : activeMode}</span>
+              <span className="sm:hidden">{activeMode === 'general' ? 'General' : activeMode === 'coding' ? 'Coder' : activeMode}</span>
+              <ChevronDown className="w-3 h-3" />
+            </button>
+            {modeMenuOpen && (
+              <>
+                <button
+                  className="fixed inset-0 z-40 cursor-default"
+                  aria-label="Close mode menu"
+                  onClick={() => setModeMenuOpen(false)}
+                />
+                <div className="absolute right-0 top-full mt-2 w-64 z-50 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-2">
+                  <div className="px-3 pt-1 pb-2 text-[10px] font-bold tracking-widest text-slate-500">SELECT AGENT MODE</div>
+                  {[
+                    { id: 'general', icon: Sparkles, label: 'General Assistant', desc: 'Chat & guidance' },
+                    { id: 'coding', icon: FileCode, label: 'PWA & Web Builder', desc: 'PWAs, Stores, Dashboards & Games' },
+                    { id: 'image', icon: Eye, label: 'Image Artist', desc: 'Generate visuals' },
+                    { id: 'search', icon: Globe, label: 'Web Explorer', desc: 'Live search' },
+                  ].map((m) => (
+                    <button
+                      key={m.id}
+                      onClick={() => { setActiveMode(m.id as any); setModeMenuOpen(false); }}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors ${activeMode === m.id ? 'bg-indigo-600 text-white' : 'hover:bg-slate-800 text-slate-200'}`}
+                    >
+                      <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${activeMode === m.id ? 'bg-white/20' : 'bg-slate-800'}`}>
+                        <m.icon className="w-4 h-4" />
+                      </span>
+                      <span>
+                        <span className="block text-sm font-semibold leading-tight">{m.label}</span>
+                        <span className="block text-[11px] opacity-70 leading-tight">{m.desc}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
 
           {/* Plus (New Chat) Button matching screenshot top right */}
           <button

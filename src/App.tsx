@@ -962,7 +962,12 @@ export default function App() {
     handleSend(promptText);
   };
 
-  if (activeMode === 'coding') {
+  // GENERAL ASSISTANT (2026-11-29): general mode uses the same full
+  // CoderView (Chat / Preview / Artifacts / Browser tabs, mini browser,
+  // Stop) as coding mode — the old fallback chat view had no Browser tab
+  // and no live-browser UI at all, so General Assistant could never open
+  // or drive the browser. Image / search modes keep the fallback view.
+  if (activeMode === 'coding' || activeMode === 'general') {
     return (
       <>
         <GoogleAIStudioCoderView
@@ -1477,7 +1482,7 @@ export default function App() {
                     onClick={() => setShowModeMenu(!showModeMenu)}
                     className={cn(
                       "p-2 rounded-xl transition-all flex items-center gap-2",
-                      activeMode === 'general' 
+                      (activeMode as string) === 'general' 
                         ? "text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10" 
                         : "bg-indigo-600/20 text-indigo-400"
                     )}
@@ -1486,7 +1491,7 @@ export default function App() {
                     {(activeMode as string) === 'coding' && <Code className="w-5 h-5" />}
                     {activeMode === 'image' && <ImageIcon className="w-5 h-5" />}
                     {activeMode === 'search' && <Search className="w-5 h-5" />}
-                    {activeMode === 'general' && <Sparkles className="w-5 h-5" />}
+                    {(activeMode as string) === 'general' && <Sparkles className="w-5 h-5" />}
                     <span className="text-xs font-bold hidden sm:block capitalize">{activeMode}</span>
                   </button>
                   
